@@ -173,7 +173,7 @@ npm run typecheck
 npm test
 ```
 
-The tests need no account and no real sign-in. They cover the provider-neutral core (one sign-in at a time, time limit, stopping the process, removal of link and code from messages, overlapping cancel and time-out, the checks on the sign-in link), the launch resolution, the expiry rules and the parsing of the status output. The sign-in tests run against a small stand-in CLI in `test/fixtures/`.
+The tests need no account and no real sign-in. They cover the provider-neutral core (one sign-in at a time, time limit, stopping the process, removal of link and code from messages, overlapping cancel and time-out, the checks on the sign-in link), the launch resolution, the expiry rules and the parsing of the status output. The sign-in tests run against a small stand-in CLI in `test/fixtures/`. One test mounts and unmounts the hook that clears the cached sign-in link when the screen closes.
 
 One more test file runs the installed `claude` CLI with a new, empty config folder. It checks that the CLI shows a link without a terminal and rejects a wrong code. It does not touch an existing sign-in. It is off by default:
 
