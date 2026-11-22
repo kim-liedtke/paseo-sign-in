@@ -75,6 +75,12 @@ The plugin has no runtime dependencies and no build step. Paseo compiles the Typ
 
 Requirements: Paseo 0.16.1 or later, and the provider CLI on the daemon host. Tested with Claude Code 2.1.323 on Linux.
 
+## Several hosts
+
+The plugin works on one daemon at a time, the one on which it is installed. If you install it on several hosts that your app is connected to, Paseo shows the **Sign-in** screen once and adds a host picker to the screen header. The picker selects the host whose sign-in you see and renew. This is standard Paseo behavior for plugin screens ([Hosts and lifecycle](https://paseo.sh/docs/plugins/reference#hosts-and-lifecycle)).
+
+The sidebar row shows the notice for one host only: the host of the open screen, or the host you picked last.
+
 ## Settings
 
 Open **Settings → Plugins**, then the settings of **Sign-in**.
@@ -148,6 +154,7 @@ To report a security problem, open a private security advisory on the repository
 - Only the default sign-in method (Claude account). `--console`, `--sso` and `--email` are not offered.
 - One account for each provider. No account switching, no handling of usage limits.
 - `claude setup-token` and API keys are out of scope. When the CLI is signed in with one of them, the screen shows the state and that no end date is reported.
+- With the plugin on several hosts, the sidebar notice covers only the selected host. A warning on another host shows after you pick that host in the screen.
 - The notice shows in the app while it is open. There are no push notifications and no email.
 - A running agent keeps its old sign-in. Start a new agent after you signed in again.
 - If the CLI changes the text or the order of its sign-in prompts, the sign-in can fail. The plugin then reports that no link was shown.
