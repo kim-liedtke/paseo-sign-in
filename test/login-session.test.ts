@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { LoginSession } from "../server/core/login-session";
 import { fakeLaunch, isRunning, sleep } from "./helpers";
@@ -156,14 +158,31 @@ describe("LoginSession: sign-in link", () => {
     ["plain http", "http://auth.example.test/authorize?state=1"],
     ["a user part before the host", "https://auth.example.test@evil.test/authorize"],
     ["a port", "https://auth.example.test:8443/authorize"],
-  ])("fails the sign-in for a link with %s", async (_name, link) => {
-    const { login, pidFile } = session({ FAKE_LINK: link });
+  ])("never shows a link with %s, and fails when the link time ends", async (_name, link) => {
+    const { login, pidFile } = session({ FAKE_LINK: link }, { linkTimeoutMs: 400 });
     const started = await login.start();
     expect(started.phase).toBe("failed");
     expect(started.url).toBeNull();
-    expect(started.message).toBe("The provider showed a sign-in link that this plugin does not accept.");
+    expect(started.message).toBe("The provider showed no sign-in link that this plugin accepts.");
     expect(isRunning(pidFile)).toBe(false);
     expect(login.isActive()).toBe(false);
+  });
+
+  it("skips a link to another host and takes the accepted link that follows", async () => {
+    const { login } = session({
+      FAKE_PRELINK: "Update available: https://downloads.other.test/release-notes \nDocs: http://docs.other.test/x \n",
+    });
+    const started = await login.start();
+    expect(started.phase).toBe("awaiting_code");
+    expect(started.url).toBe("https://auth.example.test/authorize?state=fake-state&code_challenge=fake");
+    expect((await login.submitCode("good-code")).phase).toBe("succeeded");
+  });
+
+  it("keeps waiting after another link, also when the accepted link arrives in pieces", async () => {
+    const { login } = session({ FAKE_MODE: "chunked", FAKE_PRELINK: "See https://other.test/notice \n" });
+    const started = await login.start();
+    expect(started.url).toBe("https://auth.example.test/authorize?state=fake-state&code_challenge=fake");
+    await login.cancel();
   });
 });
 
@@ -263,5 +282,57 @@ describe("LoginSession: overlapping stops", () => {
     await login.cancel();
     expect(Date.now() - before).toBeLessThan(1500);
     expect(isRunning(pidFiles[0])).toBe(false);
+  });
+});
+
+describe("LoginSession: the CLI ends by itself", () => {
+  it("reports success soon after the exit, although a helper keeps the pipes open", async () => {
+    const { login, pidFile } = session({ FAKE_EXIT_HELPER: "1" });
+    await login.start();
+    const before = Date.now();
+    const done = await login.submitCode("good-code");
+    expect(done).toEqual({ phase: "succeeded", url: null, message: null, deadline: null });
+    expect(Date.now() - before).toBeLessThan(1500);
+    expect(isRunning(pidFile)).toBe(false);
+    expect(login.isActive()).toBe(false);
+  });
+
+  it("reports a rejected code with its message in the same situation", async () => {
+    const { login } = session({ FAKE_EXIT_HELPER: "1" });
+    await login.start();
+    const before = Date.now();
+    const done = await login.submitCode("wrong-code");
+    expect(done.phase).toBe("failed");
+    expect(done.message).toContain("Login failed");
+    expect(done.message).not.toContain("wrong-code");
+    expect(Date.now() - before).toBeLessThan(1500);
+  });
+
+  it("records the result once when exit and close both arrive", async () => {
+    const { login } = session();
+    const phases: string[] = [];
+    await login.start();
+    const done = login.submitCode("good-code");
+    phases.push((await done).phase);
+    await sleep(500);
+    expect(login.snapshot().phase).toBe("succeeded");
+    // A new sign-in is not disturbed by a late timer of the finished one.
+    expect((await login.start()).phase).toBe("awaiting_code");
+    await sleep(400);
+    expect(login.snapshot().phase).toBe("awaiting_code");
+    await login.cancel();
+    expect(phases).toEqual(["succeeded"]);
+  });
+});
+
+describe("LoginSession: process group", () => {
+  it("kills a group member that ignores the stop signal after the CLI itself ended", async () => {
+    const memberPidFile = join(mkdtempSync(join(tmpdir(), "sign-in-member-")), "pid");
+    const { login, pidFile } = session({ FAKE_MODE: "member", FAKE_MEMBER_PID_FILE: memberPidFile });
+    await login.start();
+    expect(isRunning(memberPidFile)).toBe(true);
+    await login.cancel();
+    expect(isRunning(pidFile)).toBe(false);
+    expect(isRunning(memberPidFile)).toBe(false);
   });
 });

@@ -1,7 +1,7 @@
 // A stand-in for a provider CLI, used by the tests. It needs no account.
 // FAKE_MODE selects the behavior; see the cases below.
 import { spawn } from "node:child_process";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const mode = process.env.FAKE_MODE ?? "login";
@@ -9,7 +9,8 @@ const args = process.argv.slice(2).join(" ");
 if (process.env.FAKE_PID_FILE) writeFileSync(process.env.FAKE_PID_FILE, String(process.pid));
 
 const LINK = process.env.FAKE_LINK ?? "https://auth.example.test/authorize?state=fake-state&code_challenge=fake";
-const BEFORE = "Opening browser to sign in…\nIf the browser didn't open, visit: ";
+// FAKE_PRELINK: text that the CLI prints first, for example a notice with another link.
+const BEFORE = (process.env.FAKE_PRELINK ?? "") + "Opening browser to sign in…\nIf the browser didn't open, visit: ";
 // Terminal hyperlink (OSC 8) around the visible link, as real CLIs print it.
 const HYPERLINK = `\u001b]8;;${LINK}\u0007${LINK}\u001b]8;;\u0007`;
 const AFTER = "\nPaste code here if prompted > ";
@@ -41,6 +42,18 @@ if (args.startsWith("auth status")) {
   startHelper();
   printLink();
   setInterval(() => {}, 1000);
+} else if (mode === "member") {
+  // Starts a helper in the same process group that ignores SIGTERM and holds
+  // no pipes. The CLI itself ends on SIGTERM.
+  const file = process.env.FAKE_MEMBER_PID_FILE;
+  spawn(
+    process.execPath,
+    ["-e", "process.on('SIGTERM',()=>{});require('fs').writeFileSync(process.argv[1],String(process.pid));setInterval(()=>{},1000)", file],
+    { stdio: "ignore" },
+  ).unref();
+  while (!existsSync(file)) await sleep(20);
+  printLink();
+  setInterval(() => {}, 1000);
 } else if (mode === "chunked") {
   // Prints the link in pieces: cut inside the hyperlink sequence, and twice
   // inside the visible link. The link is complete only with the last piece.
@@ -61,6 +74,8 @@ if (args.startsWith("auth status")) {
   printLink();
   const lines = createInterface({ input: process.stdin });
   lines.once("line", (code) => {
+    // FAKE_EXIT_HELPER: a helper keeps the output pipes open after the CLI exits.
+    if (process.env.FAKE_EXIT_HELPER) startHelper();
     if (code === "good-code") {
       process.stdout.write("Login successful.\n");
       process.exit(0);
