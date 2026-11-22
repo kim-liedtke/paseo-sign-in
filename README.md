@@ -53,7 +53,7 @@ Sidebar footer row, by state:
  ⚠  Sign-in ended                the end date has passed
  ⚠  Not signed in                no sign-in on the host
  ?  Sign-in end date unknown     signed in, but no end date reported
- ?  Sign-in status unknown       the status could not be read
+ ?  Sign-in status unknown       the status could not be read, or the call failed
 ```
 
 After a successful sign-in, start a new agent. Paseo's documentation says that a running agent keeps the sign-in it started with.
@@ -133,8 +133,8 @@ What this plugin does and does not do:
 - **No stored secrets.** It does not read, store or send tokens. The sign-in link and the pasted code are held in memory for the one sign-in and dropped when it ends. They are not written to a log or a file. The app removes its cached copies of the link when the sign-in screen closes. Result messages that come from the CLI have links and the code removed before they are shown.
 - **No network access of its own.** No telemetry, no update check, no remote assets. Only the provider CLI talks to the provider.
 - **No shell.** Processes are started from an argument list with `shell: false`. The only program it starts is the provider CLI, with the command that the daemon configuration gives for that provider.
-- **Sign-in links are checked.** The plugin waits until the CLI has printed the whole link. It accepts only an `https` link to a host on a fixed list for the provider (`shared/links.ts`; for Claude Code: `claude.com`), without user, password or port. Any other link ends the sign-in as failed and is not sent to the app. The app checks the link again before it shows or opens it.
-- **One sign-in at a time for each provider.** A second request returns the running sign-in. No new sign-in starts while an old one is still being stopped. An unfinished sign-in is stopped after five minutes: SIGTERM, then SIGKILL. When the plugin is reloaded or disabled, or the daemon stops it, the sign-in process is stopped too.
+- **Sign-in links are checked.** The plugin waits until the CLI has printed the whole link. It accepts only an `https` link to a host on a fixed list for the provider (`shared/links.ts`; for Claude Code: `claude.com`), without user, password or port. Any other link in the output, for example in an update notice, is skipped and is never sent to the app. If no accepted link arrives in time, the sign-in fails. The app checks the link again before it shows or opens it.
+- **One sign-in at a time for each provider.** A second request returns the running sign-in. No new sign-in starts while an old one is still being stopped. An unfinished sign-in is stopped after five minutes: SIGTERM, then SIGKILL, for the CLI and for the process group it leads. When the plugin is reloaded or disabled, or the daemon stops it, the sign-in process is stopped too.
 - **Nothing that changes agents.** No system-prompt changes, no tools for agents, no automatic answers to permission requests, no automatic prompts. The plugin registers no lifecycle hooks.
 - **No file writes.** The plugin writes no files. Its one setting is stored by Paseo's settings API.
 - **Narrow RPC.** A request from the app carries a provider id from a fixed list (`shared/providers.ts`) and, for the code, a string of limited length without control characters or Unicode line separators. It cannot carry a path, a command or arguments. Inputs are validated with Zod before a handler runs.

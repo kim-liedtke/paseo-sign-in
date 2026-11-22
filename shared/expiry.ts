@@ -58,6 +58,21 @@ export function timeLeftText(daysLeft: number): string {
   return `in ${daysLeft} days`;
 }
 
+/**
+ * The one notice for the sidebar row. A status call that failed is shown as
+ * "unavailable": an old answer must not look like the current state. Before
+ * the first answer there is nothing to show.
+ */
+export function overallNotice(
+  statuses: readonly ExpiryInput[] | undefined,
+  callFailed: boolean,
+  nowMs: number,
+  warnDays: number,
+): Notice {
+  if (callFailed) return { level: "unavailable", daysLeft: null };
+  return worstNotice((statuses ?? []).map((status) => noticeFor(status, nowMs, warnDays)));
+}
+
 /** True for the states that the user must act on. Only these raise a toast. */
 export function needsAction(level: NoticeLevel): boolean {
   return level === "warning" || level === "ended" || level === "signed_out";

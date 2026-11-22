@@ -1,7 +1,7 @@
 import type { PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { Icon, SidebarRow, useToast, type PluginIconProps } from "@getpaseo/plugin/client/ui";
 import { useEffect, useMemo, useRef } from "react";
-import { needsAction, noticeFor, noticeText, timeLeftText, worstNotice, type Notice } from "../shared/expiry";
+import { needsAction, noticeFor, noticeText, overallNotice, timeLeftText, type Notice } from "../shared/expiry";
 import { useStatuses, useWarnDays } from "./data";
 
 export const SCREEN_ID = "status";
@@ -30,11 +30,12 @@ export function SignInItem({ theme, currentScreen, openScreen }: PluginSidebarIt
     label: status.label,
     notice: noticeFor(status, Date.now(), warnDays),
   }));
-  const worst = worstNotice(perProvider.map((entry) => entry.notice));
+  // A failed status call shows as "Sign-in status unknown", not as the last answer.
+  const worst = overallNotice(statuses.data, statuses.isError, Date.now(), warnDays);
   // The row shows every state that is not plainly fine. A toast is raised
   // only for the states that the user must act on.
   const messages = perProvider
-    .filter((entry) => needsAction(entry.notice.level))
+    .filter((entry) => !statuses.isError && needsAction(entry.notice.level))
     .map((entry) => noticeText(entry.label, entry.notice))
     .filter((message): message is string => message !== null);
   const announcement = messages.join(". ");

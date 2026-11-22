@@ -40,6 +40,13 @@ export const loginPhaseSchema = z.enum([
 
 export type LoginPhase = z.infer<typeof loginPhaseSchema>;
 
+const ACTIVE_LOGIN_PHASES: readonly LoginPhase[] = ["starting", "awaiting_code", "verifying"];
+
+/** True while a sign-in runs on the host. */
+export function isActiveLoginPhase(phase: LoginPhase | undefined): boolean {
+  return phase !== undefined && ACTIVE_LOGIN_PHASES.includes(phase);
+}
+
 export const loginSnapshotSchema = z.object({
   provider: providerId,
   phase: loginPhaseSchema,

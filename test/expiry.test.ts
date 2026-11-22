@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { needsAction, noticeFor, noticeText, worstNotice, type ExpiryInput } from "../shared/expiry";
+import {
+  needsAction,
+  noticeFor,
+  noticeText,
+  overallNotice,
+  worstNotice,
+  type ExpiryInput,
+} from "../shared/expiry";
 
 const now = Date.parse("2030-01-10T12:00:00.000Z");
 const signedIn = (expiresAt: string | null) => ({ state: "signed_in" as const, expiresAt });
@@ -85,5 +92,25 @@ describe("noticeText", () => {
     expect(needsAction("no_end_date")).toBe(false);
     expect(needsAction("unavailable")).toBe(false);
     expect(["warning", "ended", "signed_out"].every((level) => needsAction(level as "warning"))).toBe(true);
+  });
+});
+
+describe("overallNotice", () => {
+  const fine = signedIn("2030-02-10T12:00:00.000Z");
+  const soon = signedIn("2030-01-12T12:00:00.000Z");
+
+  it("shows a failed status call as unavailable, also when an old answer exists", () => {
+    expect(overallNotice(undefined, true, now, 7).level).toBe("unavailable");
+    expect(overallNotice([fine], true, now, 7).level).toBe("unavailable");
+    expect(overallNotice([soon], true, now, 7).level).toBe("unavailable");
+  });
+
+  it("shows nothing before the first answer", () => {
+    expect(overallNotice(undefined, false, now, 7).level).toBe("none");
+  });
+
+  it("shows the worst state of the providers when the call worked", () => {
+    expect(overallNotice([fine], false, now, 7).level).toBe("none");
+    expect(overallNotice([fine, soon], false, now, 7)).toEqual({ level: "warning", daysLeft: 2 });
   });
 });

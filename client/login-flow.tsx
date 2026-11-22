@@ -13,8 +13,8 @@ import {
 } from "../shared/contracts";
 import { isAllowedLoginLink, LOGIN_LINK_HOSTS } from "../shared/links";
 import type { ProviderId } from "../shared/providers";
-import { isActivePhase, loginKey, STATUS_KEY, useLoginState } from "./data";
-import { loginMutationKey } from "./login-traces";
+import { isActivePhase, useLoginState } from "./data";
+import { applyLoginAnswer, loginMutationKey } from "./login-traces";
 import { Button, Callout } from "./parts";
 import { useLoginCleanup } from "./use-login-cleanup";
 
@@ -45,13 +45,10 @@ export function LoginFlow(props: {
   // Clears the cached link when this component goes away; false after that.
   const mounted = useLoginCleanup(queryClient, provider);
   const apply = (snapshot: LoginSnapshot) => {
-    // An answer that arrives after the screen closed is dropped, not cached.
-    if (!mounted.current) return;
-    queryClient.setQueryData(loginKey(provider), snapshot);
-    if (!isActivePhase(snapshot.phase)) {
-      setCode("");
-      void queryClient.invalidateQueries({ queryKey: STATUS_KEY });
-    }
+    // Reads the status again when the sign-in has ended, also when this
+    // screen is closed by then. Caches the answer only while it is open.
+    applyLoginAnswer(queryClient, provider, snapshot, mounted.current);
+    if (mounted.current && !isActivePhase(snapshot.phase)) setCode("");
   };
   // The answers of these calls can hold the sign-in link. They share one key,
   // are not kept after use, and are removed when this component goes away.
