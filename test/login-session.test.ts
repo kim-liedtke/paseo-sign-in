@@ -1,6 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { LoginSession } from "../server/core/login-session";
-import { findFirstUrl } from "../server/core/text";
 import { fakeLaunch, isRunning, sleep } from "./helpers";
 
 function session(env: Record<string, string> = {}, options: { timeoutMs?: number; linkTimeoutMs?: number } = {}) {
@@ -12,7 +12,7 @@ function session(env: Record<string, string> = {}, options: { timeoutMs?: number
       return launch;
     },
     loginArgs: ["auth", "login"],
-    findUrl: findFirstUrl,
+    allowedLinkHosts: ["auth.example.test"],
     killGraceMs: 200,
     ...options,
   });
@@ -105,7 +105,7 @@ describe("LoginSession", () => {
     const login = new LoginSession({
       resolveLaunch: async () => ({ command: "/nonexistent/provider-cli", args: [], env: {} }),
       loginArgs: ["auth", "login"],
-      findUrl: findFirstUrl,
+      allowedLinkHosts: ["auth.example.test"],
     });
     const started = await login.start();
     expect(started).toEqual({
@@ -126,6 +126,10 @@ describe("LoginSession", () => {
     await login.start();
     await expect(login.submitCode("   ")).rejects.toThrow("not allowed");
     await expect(login.submitCode("a\nb")).rejects.toThrow("not allowed");
+    // Unicode line separator, paragraph separator and C1 controls (NEL, CSI).
+    for (const bad of ["a\u2028b", "a\u2029b", "a\u0085b", "a\u009bb", "a\u007fb"]) {
+      await expect(login.submitCode(bad)).rejects.toThrow("not allowed");
+    }
     expect(login.snapshot().phase).toBe("awaiting_code");
     await login.cancel();
   });
@@ -135,5 +139,129 @@ describe("LoginSession", () => {
     await login.start();
     await login.dispose();
     expect(isRunning(pidFile)).toBe(false);
+  });
+});
+
+describe("LoginSession: sign-in link", () => {
+  it("waits for the whole link when the output arrives in pieces", async () => {
+    const { login } = session({ FAKE_MODE: "chunked" });
+    const started = await login.start();
+    expect(started.phase).toBe("awaiting_code");
+    expect(started.url).toBe("https://auth.example.test/authorize?state=fake-state&code_challenge=fake");
+    await login.cancel();
+  });
+
+  it.each([
+    ["another host", "https://auth.example.test.evil.test/authorize?state=1"],
+    ["plain http", "http://auth.example.test/authorize?state=1"],
+    ["a user part before the host", "https://auth.example.test@evil.test/authorize"],
+    ["a port", "https://auth.example.test:8443/authorize"],
+  ])("fails the sign-in for a link with %s", async (_name, link) => {
+    const { login, pidFile } = session({ FAKE_LINK: link });
+    const started = await login.start();
+    expect(started.phase).toBe("failed");
+    expect(started.url).toBeNull();
+    expect(started.message).toBe("The provider showed a sign-in link that this plugin does not accept.");
+    expect(isRunning(pidFile)).toBe(false);
+    expect(login.isActive()).toBe(false);
+  });
+});
+
+describe("LoginSession: overlapping stops", () => {
+  // Every launch gets its own pid file, so each started process can be checked.
+  function tracked(env: Record<string, string>, options: { timeoutMs?: number } = {}) {
+    const pidFiles: string[] = [];
+    const login = new LoginSession({
+      resolveLaunch: async () => {
+        const { launch, pidFile } = fakeLaunch(env);
+        pidFiles.push(pidFile);
+        return launch;
+      },
+      loginArgs: ["auth", "login"],
+      allowedLinkHosts: ["auth.example.test"],
+      killGraceMs: 200,
+      ...options,
+    });
+    return { login, pidFiles };
+  }
+
+  it("two cancels and a new start leave no process without an owner", async () => {
+    const { login, pidFiles } = tracked({ FAKE_MODE: "stubborn" });
+    await login.start();
+
+    const first = login.cancel();
+    const second = login.cancel();
+    // While the old process is being stopped, start() must not begin a new one.
+    const during = await login.start();
+    expect(pidFiles).toHaveLength(1);
+    expect(during.phase).toBe("awaiting_code");
+
+    await second;
+    const restarted = await login.start();
+    await first;
+
+    // The new sign-in is still the current one and still owns its process.
+    expect(pidFiles).toHaveLength(2);
+    expect(restarted.phase).toBe("awaiting_code");
+    expect(login.snapshot().phase).toBe("awaiting_code");
+    expect(login.isActive()).toBe(true);
+    expect(isRunning(pidFiles[0])).toBe(false);
+    expect(isRunning(pidFiles[1])).toBe(true);
+
+    await login.cancel();
+    expect(isRunning(pidFiles[1])).toBe(false);
+    expect(login.snapshot().phase).toBe("cancelled");
+  });
+
+  it("a cancel during a time-out stop shares that stop, and the first reason wins", async () => {
+    const { login, pidFiles } = tracked({ FAKE_MODE: "stubborn" }, { timeoutMs: 300 });
+    await login.start();
+    await sleep(350);
+    // The time limit has started to stop the process. It needs 200 ms more.
+    expect(login.isActive()).toBe(true);
+    const cancelled = await login.cancel();
+    expect(cancelled.phase).toBe("timed_out");
+    expect(isRunning(pidFiles[0])).toBe(false);
+
+    const restarted = await login.start();
+    expect(restarted.phase).toBe("awaiting_code");
+    await sleep(250);
+    // No timer or late callback of the first attempt has touched the second.
+    expect(login.snapshot().phase).toBe("awaiting_code");
+    expect(isRunning(pidFiles[1])).toBe(true);
+    await login.dispose();
+    expect(isRunning(pidFiles[1])).toBe(false);
+  });
+
+  it("a cancel before the process exists starts nothing", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const pidFiles: string[] = [];
+    const login = new LoginSession({
+      resolveLaunch: async () => {
+        await gate;
+        const { launch, pidFile } = fakeLaunch();
+        pidFiles.push(pidFile);
+        return launch;
+      },
+      loginArgs: ["auth", "login"],
+      allowedLinkHosts: ["auth.example.test"],
+    });
+    const starting = login.start();
+    expect((await login.cancel()).phase).toBe("cancelled");
+    release();
+    expect((await starting).phase).toBe("cancelled");
+    await sleep(150);
+    expect(login.isActive()).toBe(false);
+    expect(() => readFileSync(pidFiles[0])).toThrow();
+  });
+
+  it("stops a sign-in although a helper process keeps the pipes open", async () => {
+    const { login, pidFiles } = tracked({ FAKE_MODE: "helper" });
+    await login.start();
+    const before = Date.now();
+    await login.cancel();
+    expect(Date.now() - before).toBeLessThan(1500);
+    expect(isRunning(pidFiles[0])).toBe(false);
   });
 });
