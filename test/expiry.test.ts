@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   needsAction,
+  nextAnnouncement,
   noticeFor,
   noticeText,
   overallNotice,
@@ -112,5 +113,34 @@ describe("overallNotice", () => {
   it("shows the worst state of the providers when the call worked", () => {
     expect(overallNotice([fine], false, now, 7).level).toBe("none");
     expect(overallNotice([fine, soon], false, now, 7)).toEqual({ level: "warning", daysLeft: 2 });
+  });
+});
+
+describe("nextAnnouncement", () => {
+  const message = "Claude Code is not signed in";
+
+  it("announces a message once", () => {
+    expect(nextAnnouncement(null, message, false)).toEqual({ announce: message, remembered: message });
+    expect(nextAnnouncement(message, message, false)).toEqual({ announce: null, remembered: message });
+  });
+
+  it("does not repeat the message after a failed status call", () => {
+    let state = nextAnnouncement(null, message, false);
+    // The call fails. Depending on the cache there is an old answer or none.
+    state = nextAnnouncement(state.remembered, message, true);
+    expect(state.announce).toBeNull();
+    state = nextAnnouncement(state.remembered, "", true);
+    expect(state.announce).toBeNull();
+    // The call works again and reports the same state.
+    state = nextAnnouncement(state.remembered, message, false);
+    expect(state).toEqual({ announce: null, remembered: message });
+  });
+
+  it("announces again when the message changes or comes back after the state was fine", () => {
+    const other = "Claude Code sign-in has ended";
+    expect(nextAnnouncement(message, other, false)).toEqual({ announce: other, remembered: other });
+    const fine = nextAnnouncement(message, "", false);
+    expect(fine).toEqual({ announce: null, remembered: null });
+    expect(nextAnnouncement(fine.remembered, message, false).announce).toBe(message);
   });
 });

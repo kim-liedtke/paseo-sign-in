@@ -59,6 +59,45 @@ function groupHasMembers(pid: number): boolean {
 }
 
 /**
+ * Stops what is left of the process group of a child that has ended by
+ * itself: SIGTERM, then SIGKILL after the grace period. Does nothing when the
+ * group is empty. Resolves when the group is empty, or at a hard deadline
+ * after the SIGKILL.
+ */
+export function stopGroup(
+  child: ChildProcessWithoutNullStreams,
+  graceMs: number,
+  hardDeadlineMs: number = HARD_DEADLINE_MS,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const pid = child.pid;
+    if (pid === undefined || !groupHasMembers(pid)) return resolve();
+    const signal = (name: NodeJS.Signals) => {
+      try {
+        process.kill(-pid, name);
+      } catch {
+        // The group is already gone.
+      }
+    };
+    let giveUp: NodeJS.Timeout | null = null;
+    const done = () => {
+      clearInterval(poll);
+      clearTimeout(force);
+      if (giveUp) clearTimeout(giveUp);
+      resolve();
+    };
+    const poll = setInterval(() => {
+      if (!groupHasMembers(pid)) done();
+    }, 25);
+    const force = setTimeout(() => {
+      if (groupHasMembers(pid)) signal("SIGKILL");
+      giveUp = setTimeout(done, hardDeadlineMs);
+    }, graceMs);
+    signal("SIGTERM");
+  });
+}
+
+/**
  * Stops a child and the process group it leads: SIGTERM, then SIGKILL after
  * the grace period. Resolves when the child has exited and its group is
  * empty. The SIGKILL also comes when the child itself ended on SIGTERM but a

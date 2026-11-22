@@ -2,7 +2,7 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { CODE_PATTERN, type LoginPhase } from "../../shared/contracts";
 import { isAllowedLoginLink } from "../../shared/links";
 import type { Launch } from "./launch";
-import { releasePipes, signalProcess, startProcess, stopProcess } from "./process";
+import { releasePipes, signalProcess, startProcess, stopGroup, stopProcess } from "./process";
 import { findTerminatedUrls, safeMessage } from "./text";
 
 export interface LoginSessionOptions {
@@ -50,6 +50,8 @@ interface Attempt {
   sawOtherLink: boolean;
   /** The result of the CLI's own exit was recorded. */
   concluded: boolean;
+  /** Records the result of the CLI's own exit. Set once the CLI has exited. */
+  concludeNow: (() => void) | null;
   output: string;
   submittedCode: string | null;
   /** Set once the attempt is being stopped from our side. Shared by every caller. */
@@ -75,6 +77,8 @@ export class LoginSession {
   private current: Attempt | null = null;
   private listeners = new Set<Listener>();
   private starting: Promise<LoginState> | null = null;
+  /** Clean-ups of process groups whose CLI has ended by itself. */
+  private lingering = new Set<Promise<void>>();
 
   constructor(options: LoginSessionOptions) {
     this.options = {
@@ -142,6 +146,7 @@ export class LoginSession {
   async dispose(): Promise<void> {
     const attempt = this.current;
     if (attempt) await this.finish(attempt, "cancelled", null);
+    await Promise.all(this.lingering);
     this.listeners.clear();
   }
 
@@ -158,6 +163,7 @@ export class LoginSession {
       exitTimer: null,
       sawOtherLink: false,
       concluded: false,
+      concludeNow: null,
       output: "",
       submittedCode: null,
       stopping: null,
@@ -166,17 +172,8 @@ export class LoginSession {
     const deadline = new Date(this.options.now() + this.options.timeoutMs).toISOString();
     this.setState({ phase: "starting", url: null, message: null, deadline });
 
-    let child: ChildProcessWithoutNullStreams;
-    try {
-      const launch = await this.options.resolveLaunch();
-      // Cancelled while the launch was resolved: start nothing.
-      if (this.current !== attempt || attempt.stopping) return this.snapshot();
-      child = startProcess(launch, this.options.loginArgs);
-    } catch {
-      this.settle(attempt, "failed", "The provider command could not be started.");
-      return this.snapshot();
-    }
-    attempt.child = child;
+    // The timers start before the launch is resolved. If that lookup never
+    // answers, the link timer still ends the attempt.
     attempt.timer = setTimeout(() => {
       void this.finish(attempt, "timed_out", "The sign-in was not finished in time and was stopped.");
     }, this.options.timeoutMs);
@@ -187,6 +184,20 @@ export class LoginSession {
         : "The provider did not show a sign-in link.";
       void this.finish(attempt, "failed", message);
     }, this.options.linkTimeoutMs);
+
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      // Do not wait for the lookup longer than the attempt lives.
+      const ended = this.waitFor(() => this.current !== attempt).then(() => null);
+      const launch = await Promise.race([this.options.resolveLaunch(), ended]);
+      // Cancelled or timed out while the launch was resolved: start nothing.
+      if (!launch || this.current !== attempt || attempt.stopping) return this.snapshot();
+      child = startProcess(launch, this.options.loginArgs);
+    } catch {
+      this.settle(attempt, "failed", "The provider command could not be started.");
+      return this.snapshot();
+    }
+    attempt.child = child;
 
     const onData = (chunk: Buffer) => this.onOutput(attempt, chunk.toString("utf8"));
     child.stdout.on("data", onData);
@@ -205,6 +216,11 @@ export class LoginSession {
       if (attempt.stopping || attempt.concluded) return;
       attempt.concluded = true;
       releasePipes(child);
+      // The CLI is gone. Stop what it left in its process group, so that a
+      // sign-in leaves no process behind however it ended.
+      const cleanup = stopGroup(child, this.options.killGraceMs);
+      this.lingering.add(cleanup);
+      void cleanup.then(() => this.lingering.delete(cleanup));
       if (exitCode === 0) {
         this.settle(attempt, "succeeded", null);
       } else {
@@ -219,6 +235,7 @@ export class LoginSession {
     // the rest of the output can arrive.
     child.on("close", (exitCode) => conclude(exitCode));
     child.on("exit", (exitCode) => {
+      attempt.concludeNow = () => conclude(exitCode);
       attempt.exitTimer = setTimeout(() => conclude(exitCode), this.options.exitGraceMs);
     });
 
@@ -253,6 +270,13 @@ export class LoginSession {
   private finish(attempt: Attempt, phase: LoginPhase, message: string | null): Promise<void> {
     if (attempt.stopping) return attempt.stopping;
     if (this.current !== attempt) return Promise.resolve();
+    // The CLI has already ended by itself and its result is only waiting for
+    // the rest of the output. That result is the truth: record it, and not a
+    // cancel or a time-out that arrived a moment later.
+    if (attempt.concludeNow) {
+      attempt.concludeNow();
+      return Promise.resolve();
+    }
     attempt.stopping = (async () => {
       if (attempt.child) await stopProcess(attempt.child, this.options.killGraceMs);
       this.settle(attempt, phase, message);

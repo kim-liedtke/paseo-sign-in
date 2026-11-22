@@ -73,9 +73,19 @@ if (args.startsWith("auth status")) {
 } else {
   printLink();
   const lines = createInterface({ input: process.stdin });
-  lines.once("line", (code) => {
+  lines.once("line", async (code) => {
     // FAKE_EXIT_HELPER: a helper keeps the output pipes open after the CLI exits.
     if (process.env.FAKE_EXIT_HELPER) startHelper();
+    // FAKE_EXIT_MEMBER: a process in the CLI's own group outlives the CLI and ignores SIGTERM.
+    if (process.env.FAKE_EXIT_MEMBER) {
+      const file = process.env.FAKE_EXIT_MEMBER;
+      spawn(
+        process.execPath,
+        ["-e", "process.on('SIGTERM',()=>{});require('fs').writeFileSync(process.argv[1],String(process.pid));setInterval(()=>{},1000)", file],
+        { stdio: "ignore" },
+      ).unref();
+      while (!existsSync(file)) await sleep(20);
+    }
     if (code === "good-code") {
       process.stdout.write("Login successful.\n");
       process.exit(0);

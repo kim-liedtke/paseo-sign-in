@@ -5,7 +5,10 @@ import { describe, expect, it } from "vitest";
 import { LoginSession } from "../server/core/login-session";
 import { fakeLaunch, isRunning, sleep } from "./helpers";
 
-function session(env: Record<string, string> = {}, options: { timeoutMs?: number; linkTimeoutMs?: number } = {}) {
+function session(
+  env: Record<string, string> = {},
+  options: { timeoutMs?: number; linkTimeoutMs?: number; exitGraceMs?: number } = {},
+) {
   const { launch, pidFile } = fakeLaunch(env);
   let launches = 0;
   const login = new LoginSession({
@@ -333,6 +336,63 @@ describe("LoginSession: process group", () => {
     expect(isRunning(memberPidFile)).toBe(true);
     await login.cancel();
     expect(isRunning(pidFile)).toBe(false);
+    expect(isRunning(memberPidFile)).toBe(false);
+  });
+});
+
+describe("LoginSession: review of the second pull request", () => {
+  it("ends the attempt when the lookup of the launch never answers", async () => {
+    const login = new LoginSession({
+      resolveLaunch: () => new Promise(() => {}),
+      loginArgs: ["auth", "login"],
+      allowedLinkHosts: ["auth.example.test"],
+      linkTimeoutMs: 300,
+    });
+    const started = await login.start();
+    expect(started.phase).toBe("failed");
+    expect(started.message).toBe("The provider did not show a sign-in link.");
+    expect(login.isActive()).toBe(false);
+  });
+
+  it("records the real result when a cancel arrives just after the CLI ended with success", async () => {
+    // The helper keeps the pipes open, so only the exit is known, and the
+    // result waits for the rest of the output for 2 seconds.
+    const { login } = session({ FAKE_EXIT_HELPER: "1" }, { exitGraceMs: 2000 });
+    await login.start();
+    const submitted = login.submitCode("good-code");
+    await sleep(250);
+    expect(login.snapshot().phase).toBe("verifying");
+    const cancelled = await login.cancel();
+    expect(cancelled.phase).toBe("succeeded");
+    expect((await submitted).phase).toBe("succeeded");
+  });
+
+  it("records a rejected code, not a cancel, in the same situation", async () => {
+    const { login } = session({ FAKE_EXIT_HELPER: "1" }, { exitGraceMs: 2000 });
+    await login.start();
+    const submitted = login.submitCode("wrong-code");
+    await sleep(250);
+    expect((await login.cancel()).phase).toBe("failed");
+    expect((await submitted).message).toContain("Login failed");
+  });
+
+  it("stops a group member that outlives a sign-in that ended normally", async () => {
+    const memberPidFile = join(mkdtempSync(join(tmpdir(), "sign-in-member-")), "pid");
+    const { login } = session({ FAKE_EXIT_MEMBER: memberPidFile });
+    await login.start();
+    expect((await login.submitCode("good-code")).phase).toBe("succeeded");
+    expect(isRunning(memberPidFile)).toBe(true);
+    // dispose waits for the clean-up of the group: SIGTERM, then SIGKILL after 200 ms.
+    await login.dispose();
+    expect(isRunning(memberPidFile)).toBe(false);
+  });
+
+  it("stops that member also without a dispose", async () => {
+    const memberPidFile = join(mkdtempSync(join(tmpdir(), "sign-in-member-")), "pid");
+    const { login } = session({ FAKE_EXIT_MEMBER: memberPidFile });
+    await login.start();
+    await login.submitCode("good-code");
+    await sleep(500);
     expect(isRunning(memberPidFile)).toBe(false);
   });
 });

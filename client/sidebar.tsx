@@ -1,7 +1,15 @@
 import type { PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { Icon, SidebarRow, useToast, type PluginIconProps } from "@getpaseo/plugin/client/ui";
 import { useEffect, useMemo, useRef } from "react";
-import { needsAction, noticeFor, noticeText, overallNotice, timeLeftText, type Notice } from "../shared/expiry";
+import {
+  needsAction,
+  nextAnnouncement,
+  noticeFor,
+  noticeText,
+  overallNotice,
+  timeLeftText,
+  type Notice,
+} from "../shared/expiry";
 import { useStatuses, useWarnDays } from "./data";
 
 export const SCREEN_ID = "status";
@@ -35,21 +43,18 @@ export function SignInItem({ theme, currentScreen, openScreen }: PluginSidebarIt
   // The row shows every state that is not plainly fine. A toast is raised
   // only for the states that the user must act on.
   const messages = perProvider
-    .filter((entry) => !statuses.isError && needsAction(entry.notice.level))
+    .filter((entry) => needsAction(entry.notice.level))
     .map((entry) => noticeText(entry.label, entry.notice))
     .filter((message): message is string => message !== null);
   const announcement = messages.join(". ");
 
   useEffect(() => {
-    if (!announcement) {
-      announced.current = null;
-      return;
-    }
-    if (announced.current === announcement) return;
-    announced.current = announcement;
-    if (worst.level === "warning") toast.show(announcement, { variant: "warning", durationMs: 6000 });
-    else toast.error(announcement);
-  }, [announcement, worst.level, toast]);
+    const next = nextAnnouncement(announced.current, announcement, statuses.isError);
+    announced.current = next.remembered;
+    if (!next.announce) return;
+    if (worst.level === "warning") toast.show(next.announce, { variant: "warning", durationMs: 6000 });
+    else toast.error(next.announce);
+  }, [announcement, statuses.isError, worst.level, toast]);
 
   const NoticeIcon = useMemo(() => {
     const unknown = worst.level === "unavailable" || worst.level === "no_end_date";
