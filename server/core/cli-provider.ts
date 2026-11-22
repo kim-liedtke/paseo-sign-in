@@ -57,7 +57,9 @@ export function createCliProvider(definition: CliProviderDefinition): AuthProvid
   const statusCacheMs = definition.statusCacheMs ?? 5000;
   // One status call at a time. Several clients and surfaces ask at the same
   // moment, and each call starts a process.
-  let cached: { at: number; value: Promise<ProviderStatus> } | null = null;
+  // A running call is shared for as long as it runs, also when that is longer
+  // than the cache time. A finished answer is reused for the cache time.
+  let cached: { value: Promise<ProviderStatus>; settledAt: number | null } | null = null;
   const forgetStatus = () => {
     cached = null;
   };
@@ -92,8 +94,13 @@ export function createCliProvider(definition: CliProviderDefinition): AuthProvid
     label: definition.label,
 
     status(): Promise<ProviderStatus> {
-      if (cached && now() - cached.at < statusCacheMs) return cached.value;
-      const entry = { at: now(), value: readStatus() };
+      if (cached && (cached.settledAt === null || now() - cached.settledAt < statusCacheMs)) {
+        return cached.value;
+      }
+      const entry: NonNullable<typeof cached> = { value: readStatus(), settledAt: null };
+      void entry.value.then(() => {
+        entry.settledAt = now();
+      });
       cached = entry;
       return entry.value;
     },

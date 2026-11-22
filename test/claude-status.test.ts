@@ -111,7 +111,7 @@ describe("Claude provider with a stand-in CLI", () => {
 describe("Claude provider: sign-in link hosts", () => {
   it("refuses a link that is not on a Claude host", async () => {
     const { launch, pidFile } = fakeLaunch({ FAKE_LINK: "https://claude.com.evil.test/cai/oauth/authorize?state=1" });
-    const provider = createClaudeProvider(async () => launch);
+    const provider = createClaudeProvider(async () => launch, { linkTimeoutMs: 400 });
     const started = await provider.startLogin();
     expect(started).toMatchObject({ phase: "failed", url: null });
     expect(() => process.kill(Number(readFileSync(pidFile, "utf8")), 0)).toThrow();
@@ -150,6 +150,22 @@ describe("Claude provider: status cache", () => {
     await provider.status();
     expect(countRuns(countFile)).toBe(1);
     await new Promise((resolve) => setTimeout(resolve, 350));
+    await provider.status();
+    expect(countRuns(countFile)).toBe(2);
+  });
+
+  it("shares a running call also when it runs longer than the cache time", async () => {
+    const { provider, countFile } = counted({ FAKE_STATUS_DELAY: "500" }, 100);
+    const first = provider.status();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    // 300 ms is past the cache time of 100 ms, but the first call still runs.
+    const second = provider.status();
+    expect((await second).checkedAt).toBe((await first).checkedAt);
+    expect(countRuns(countFile)).toBe(1);
+    // The cache time counts from the answer, not from the start of the call.
+    await provider.status();
+    expect(countRuns(countFile)).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 150));
     await provider.status();
     expect(countRuns(countFile)).toBe(2);
   });
