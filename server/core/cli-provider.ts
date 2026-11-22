@@ -17,8 +17,10 @@ export interface CliProviderDefinition {
   /** Turns the output of the status command into status fields. */
   parseStatus(result: RunResult): StatusFields;
   loginArgs: readonly string[];
-  /** Returns the sign-in link once the CLI has printed it, else null. */
-  findLoginUrl(output: string): string | null;
+  /** The hosts whose sign-in links are accepted. */
+  loginLinkHosts: readonly string[];
+  /** A status answer is reused for this long, and a running status call is shared. */
+  statusCacheMs?: number;
   statusTimeoutMs?: number;
   loginTimeoutMs?: number;
   linkTimeoutMs?: number;
@@ -46,50 +48,74 @@ export function createCliProvider(definition: CliProviderDefinition): AuthProvid
   const session = new LoginSession({
     resolveLaunch: definition.resolveLaunch,
     loginArgs: definition.loginArgs,
-    findUrl: definition.findLoginUrl,
+    allowedLinkHosts: definition.loginLinkHosts,
     timeoutMs: definition.loginTimeoutMs,
     linkTimeoutMs: definition.linkTimeoutMs,
     now,
   });
   const toSnapshot = (state: LoginState): LoginSnapshot => ({ provider: definition.id, ...state });
+  const statusCacheMs = definition.statusCacheMs ?? 5000;
+  // One status call at a time. Several clients and surfaces ask at the same
+  // moment, and each call starts a process.
+  let cached: { at: number; value: Promise<ProviderStatus> } | null = null;
+  const forgetStatus = () => {
+    cached = null;
+  };
+
+  async function readStatus(): Promise<ProviderStatus> {
+    let fields: StatusFields;
+    try {
+      const launch = await definition.resolveLaunch();
+      const result = await runToEnd(launch, definition.statusArgs, definition.statusTimeoutMs ?? 15_000);
+      if (result.spawnError === "ENOENT") {
+        fields = { ...UNAVAILABLE, detail: "The provider command was not found on the host." };
+      } else if (result.spawnError) {
+        fields = { ...UNAVAILABLE, detail: "The provider command could not be started." };
+      } else if (result.timedOut) {
+        fields = { ...UNAVAILABLE, detail: "The status command did not answer in time." };
+      } else {
+        fields = definition.parseStatus(result);
+      }
+    } catch {
+      fields = { ...UNAVAILABLE, detail: "The status could not be read." };
+    }
+    return {
+      provider: definition.id,
+      label: definition.label,
+      ...fields,
+      checkedAt: new Date(now()).toISOString(),
+    };
+  }
 
   return {
     id: definition.id,
     label: definition.label,
 
-    async status(): Promise<ProviderStatus> {
-      let fields: StatusFields;
-      try {
-        const launch = await definition.resolveLaunch();
-        const result = await runToEnd(launch, definition.statusArgs, definition.statusTimeoutMs ?? 15_000);
-        if (result.spawnError === "ENOENT") {
-          fields = { ...UNAVAILABLE, detail: "The provider command was not found on the host." };
-        } else if (result.spawnError) {
-          fields = { ...UNAVAILABLE, detail: "The provider command could not be started." };
-        } else if (result.timedOut) {
-          fields = { ...UNAVAILABLE, detail: "The status command did not answer in time." };
-        } else {
-          fields = definition.parseStatus(result);
-        }
-      } catch {
-        fields = { ...UNAVAILABLE, detail: "The status could not be read." };
-      }
-      return {
-        provider: definition.id,
-        label: definition.label,
-        ...fields,
-        checkedAt: new Date(now()).toISOString(),
-      };
+    status(): Promise<ProviderStatus> {
+      if (cached && now() - cached.at < statusCacheMs) return cached.value;
+      const entry = { at: now(), value: readStatus() };
+      cached = entry;
+      return entry.value;
     },
 
+    // A sign-in changes the status. Every step drops the cached answer.
     async startLogin() {
+      forgetStatus();
       return toSnapshot(await session.start());
     },
     async submitCode(code: string) {
-      return toSnapshot(await session.submitCode(code));
+      try {
+        return toSnapshot(await session.submitCode(code));
+      } finally {
+        forgetStatus();
+      }
     },
     async cancel() {
-      return toSnapshot(await session.cancel());
+      try {
+        return toSnapshot(await session.cancel());
+      } finally {
+        forgetStatus();
+      }
     },
     loginState() {
       return toSnapshot(session.snapshot());

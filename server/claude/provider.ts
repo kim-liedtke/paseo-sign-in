@@ -1,6 +1,6 @@
 import { createCliProvider } from "../core/cli-provider";
 import type { Launch } from "../core/launch";
-import { findFirstUrl } from "../core/text";
+import { LOGIN_LINK_HOSTS } from "../../shared/links";
 import { parseClaudeStatus } from "./status";
 
 export const CLAUDE_DEFAULT_COMMAND = ["claude"] as const;
@@ -11,7 +11,10 @@ export const CLAUDE_DEFAULT_COMMAND = ["claude"] as const;
  * pastes a code back. The command reads the code from its standard input and
  * needs no terminal.
  */
-export function createClaudeProvider(resolveLaunch: () => Promise<Launch>) {
+export function createClaudeProvider(
+  resolveLaunch: () => Promise<Launch>,
+  overrides: { statusCacheMs?: number } = {},
+) {
   return createCliProvider({
     id: "claude",
     label: "Claude Code",
@@ -19,6 +22,7 @@ export function createClaudeProvider(resolveLaunch: () => Promise<Launch>) {
     statusArgs: ["auth", "status", "--json"],
     parseStatus: parseClaudeStatus,
     loginArgs: ["auth", "login"],
-    findLoginUrl: findFirstUrl,
+    loginLinkHosts: LOGIN_LINK_HOSTS.claude,
+    ...overrides,
   });
 }

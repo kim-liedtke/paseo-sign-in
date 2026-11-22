@@ -53,4 +53,10 @@ describe("RPC contracts", () => {
     expect(submitCodeRpc.input.safeParse({ provider: "claude", code: "x".repeat(5000) }).success).toBe(false);
     expect(submitCodeRpc.input.safeParse({ provider: "claude", code: ["a"] }).success).toBe(false);
   });
+
+  it("refuse a code with control characters or line separators", () => {
+    for (const code of ["a\nb", "a\rb", "a\u0000b", "a\u007fb", "a\u0085b", "a\u009bb", "a\u2028b", "a\u2029b"]) {
+      expect(submitCodeRpc.input.safeParse({ provider: "claude", code }).success).toBe(false);
+    }
+  });
 });

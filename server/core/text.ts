@@ -13,17 +13,21 @@ export function stripTerminalCodes(text: string): string {
 }
 
 const URL_PATTERN = /https?:\/\/[^\s"'<>]+/g;
+// A link counts only when whitespace follows it, so a link that is still
+// being printed is never taken.
+const TERMINATED_URL = /https?:\/\/[^\s"'<>]+(?=\s)/;
 
-/** The first http(s) link in terminal output, or null. */
-export function findFirstUrl(text: string): string | null {
-  const match = stripTerminalCodes(text).match(URL_PATTERN);
-  if (!match) return null;
-  try {
-    const url = new URL(match[0]);
-    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : null;
-  } catch {
-    return null;
-  }
+/**
+ * The first http(s) link in terminal output that is complete, or null. A link
+ * is complete when whitespace or a line end follows it. Output can arrive in
+ * pieces: text after an unfinished terminal sequence is not looked at.
+ */
+export function findTerminatedUrl(output: string): string | null {
+  let text = output.replace(OSC, "").replace(CSI, "").replace(OTHER_ESCAPE, "");
+  const unfinished = text.indexOf("\u001b");
+  if (unfinished !== -1) text = text.slice(0, unfinished);
+  const match = TERMINATED_URL.exec(text.replace(CONTROL, ""));
+  return match ? match[0] : null;
 }
 
 /**

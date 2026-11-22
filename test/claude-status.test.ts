@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createClaudeProvider } from "../server/claude/provider";
 import { parseClaudeStatus } from "../server/claude/status";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fakeLaunch } from "./helpers";
 
 // Shaped like the output of `claude auth status --json`, with invented values.
@@ -49,9 +52,12 @@ describe("parseClaudeStatus", () => {
     expect(status).toMatchObject({ plan: "ultra", method: "new-method" });
   });
 
-  it("drops an end date that is not a date", () => {
-    const status = parseClaudeStatus({ stdout: JSON.stringify({ loggedIn: true, loginExpiresAt: "soon" }) });
-    expect(status.expiresAt).toBeNull();
+  it("drops an end date that is not a date or not a string, and stays signed in", () => {
+    for (const loginExpiresAt of ["soon", 1893456000000, { at: "2030-03-01" }, true, null]) {
+      const status = parseClaudeStatus({ stdout: JSON.stringify({ loggedIn: true, loginExpiresAt }) });
+      expect(status.state).toBe("signed_in");
+      expect(status.expiresAt).toBeNull();
+    }
   });
 
   it("reports unavailable for output it does not understand", () => {
@@ -92,12 +98,76 @@ describe("Claude provider with a stand-in CLI", () => {
   });
 
   it("signs in through the provider interface", async () => {
-    const { launch } = fakeLaunch();
+    const { launch } = fakeLaunch({ FAKE_LINK: "https://claude.com/cai/oauth/authorize?code=true&state=fake" });
     const provider = createClaudeProvider(async () => launch);
     expect(provider.loginState()).toMatchObject({ provider: "claude", phase: "idle" });
     const started = await provider.startLogin();
     expect(started).toMatchObject({ provider: "claude", phase: "awaiting_code" });
     expect((await provider.submitCode("good-code")).phase).toBe("succeeded");
     await provider.dispose();
+  });
+});
+
+describe("Claude provider: sign-in link hosts", () => {
+  it("refuses a link that is not on a Claude host", async () => {
+    const { launch, pidFile } = fakeLaunch({ FAKE_LINK: "https://claude.com.evil.test/cai/oauth/authorize?state=1" });
+    const provider = createClaudeProvider(async () => launch);
+    const started = await provider.startLogin();
+    expect(started).toMatchObject({ phase: "failed", url: null });
+    expect(() => process.kill(Number(readFileSync(pidFile, "utf8")), 0)).toThrow();
+  });
+});
+
+describe("Claude provider: status cache", () => {
+  const countRuns = (file: string) => {
+    try {
+      return readFileSync(file, "utf8").length;
+    } catch {
+      return 0;
+    }
+  };
+  function counted(env: Record<string, string> = {}, statusCacheMs?: number) {
+    const countFile = join(mkdtempSync(join(tmpdir(), "sign-in-count-")), "runs");
+    const { launch } = fakeLaunch({
+      FAKE_STATUS: SIGNED_IN,
+      FAKE_COUNT_FILE: countFile,
+      FAKE_LINK: "https://claude.com/cai/oauth/authorize?state=fake",
+      ...env,
+    });
+    return { provider: createClaudeProvider(async () => launch, { statusCacheMs }), countFile };
+  }
+
+  it("shares one running status call between callers", async () => {
+    const { provider, countFile } = counted({ FAKE_STATUS_DELAY: "200" });
+    const answers = await Promise.all([provider.status(), provider.status(), provider.status()]);
+    expect(countRuns(countFile)).toBe(1);
+    expect(answers.every((answer) => answer.checkedAt === answers[0].checkedAt)).toBe(true);
+  });
+
+  it("reuses an answer for a few seconds, then asks again", async () => {
+    const { provider, countFile } = counted({}, 300);
+    await provider.status();
+    await provider.status();
+    expect(countRuns(countFile)).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await provider.status();
+    expect(countRuns(countFile)).toBe(2);
+  });
+
+  it("asks again after a sign-in step, because that changes the status", async () => {
+    const { provider, countFile } = counted();
+    await provider.status();
+    await provider.startLogin();
+    await provider.cancel();
+    await provider.status();
+    expect(countRuns(countFile)).toBe(2);
+  });
+
+  it("answers although a helper process keeps the pipes of the status command open", async () => {
+    const { provider } = counted({ FAKE_HELPER: "1" });
+    const before = Date.now();
+    const status = await provider.status();
+    expect(status.state).toBe("signed_in");
+    expect(Date.now() - before).toBeLessThan(2000);
   });
 });

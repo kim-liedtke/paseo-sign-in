@@ -6,6 +6,10 @@ const providerId = z.enum(PROVIDER_IDS);
 
 export const MAX_CODE_LENGTH = 2048;
 
+// A pasted code is one line of visible characters: no C0 or C1 controls, no
+// DEL, no Unicode line or paragraph separator.
+export const CODE_PATTERN = /^[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$/;
+
 export const providerStatusSchema = z.object({
   provider: providerId,
   label: z.string(),
@@ -68,7 +72,7 @@ export const startLoginRpc = defineRpc({
 
 export const submitCodeRpc = defineRpc({
   name: "login.submit-code",
-  input: z.object({ provider: providerId, code: z.string().min(1).max(MAX_CODE_LENGTH) }),
+  input: z.object({ provider: providerId, code: z.string().min(1).max(MAX_CODE_LENGTH).regex(CODE_PATTERN) }),
   output: loginSnapshotSchema,
 });
 
