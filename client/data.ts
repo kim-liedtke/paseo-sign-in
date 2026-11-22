@@ -3,9 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { listStatusRpc, loginStateRpc, type LoginPhase } from "../shared/contracts";
 import type { ProviderId } from "../shared/providers";
 import { DEFAULT_WARN_DAYS, noticeSettings } from "../shared/settings";
+import { loginKey } from "./login-traces";
 
 export const STATUS_KEY = ["sign-in", "status"] as const;
-export const loginKey = (provider: ProviderId) => ["sign-in", "login", provider] as const;
+export { loginKey };
 
 // The status is read when a surface opens and then on this slow timer.
 const STATUS_REFRESH_MS = 15 * 60 * 1000;

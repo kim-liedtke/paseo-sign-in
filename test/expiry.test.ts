@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { noticeFor, noticeText, worstNotice } from "../shared/expiry";
+import { needsAction, noticeFor, noticeText, worstNotice, type ExpiryInput } from "../shared/expiry";
 
 const now = Date.parse("2030-01-10T12:00:00.000Z");
 const signedIn = (expiresAt: string | null) => ({ state: "signed_in" as const, expiresAt });
@@ -25,11 +25,18 @@ describe("noticeFor", () => {
     expect(noticeFor(signedIn("2029-12-01T00:00:00.000Z"), now, 7).level).toBe("ended");
   });
 
-  it("reports signed out, and stays quiet when the state is unknown", () => {
+  it("reports signed out", () => {
     expect(noticeFor({ state: "signed_out", expiresAt: null }, now, 7).level).toBe("signed_out");
-    expect(noticeFor({ state: "unavailable", expiresAt: null }, now, 7).level).toBe("none");
-    expect(noticeFor(signedIn(null), now, 7).level).toBe("none");
-    expect(noticeFor(signedIn("not a date"), now, 7).level).toBe("none");
+  });
+
+  it("never reads a missing or unreadable end date as nothing to do", () => {
+    expect(noticeFor({ state: "unavailable", expiresAt: null }, now, 7).level).toBe("unavailable");
+    expect(noticeFor(signedIn(null), now, 7).level).toBe("no_end_date");
+    expect(noticeFor(signedIn("not a date"), now, 7).level).toBe("no_end_date");
+    for (const value of [undefined, 1893456000000, {}, true]) {
+      const input = { state: "signed_in", expiresAt: value } as unknown as ExpiryInput;
+      expect(noticeFor(input, now, 7).level).toBe("no_end_date");
+    }
   });
 });
 
@@ -61,5 +68,22 @@ describe("noticeText", () => {
     expect(noticeText("Claude Code", { level: "ended", daysLeft: 0 })).toBe("Claude Code sign-in has ended");
     expect(noticeText("Claude Code", { level: "signed_out", daysLeft: null })).toBe("Claude Code is not signed in");
     expect(noticeText("Claude Code", { level: "none", daysLeft: 30 })).toBeNull();
+    expect(noticeText("Claude Code", { level: "no_end_date", daysLeft: null })).toBe(
+      "Claude Code reports no end date for the sign-in",
+    );
+    expect(noticeText("Claude Code", { level: "unavailable", daysLeft: null })).toBe(
+      "Claude Code sign-in status is not available",
+    );
+  });
+
+  it("ranks the unknown states above fine and below the states that need action", () => {
+    const unknown = { level: "no_end_date" as const, daysLeft: null };
+    const unavailable = { level: "unavailable" as const, daysLeft: null };
+    expect(worstNotice([{ level: "none", daysLeft: 30 }, unknown]).level).toBe("no_end_date");
+    expect(worstNotice([unknown, unavailable]).level).toBe("unavailable");
+    expect(worstNotice([unavailable, { level: "warning", daysLeft: 2 }]).level).toBe("warning");
+    expect(needsAction("no_end_date")).toBe(false);
+    expect(needsAction("unavailable")).toBe(false);
+    expect(["warning", "ended", "signed_out"].every((level) => needsAction(level as "warning"))).toBe(true);
   });
 });

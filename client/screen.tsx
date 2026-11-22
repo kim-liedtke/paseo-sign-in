@@ -13,6 +13,7 @@ function stateLine(status: ProviderStatus, notice: Notice): { text: string; tone
   if (notice.level === "signed_out") return { text: "Not signed in", tone: "danger" };
   if (notice.level === "ended") return { text: "Sign-in ended", tone: "danger" };
   if (notice.level === "warning") return { text: "Signed in, ends soon", tone: "warning" };
+  if (notice.level === "no_end_date") return { text: "Signed in, end date unknown", tone: "neutral" };
   return { text: "Signed in", tone: "success" };
 }
 

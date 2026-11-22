@@ -1,7 +1,7 @@
 import type { PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { Icon, SidebarRow, useToast, type PluginIconProps } from "@getpaseo/plugin/client/ui";
 import { useEffect, useMemo, useRef } from "react";
-import { noticeFor, noticeText, timeLeftText, worstNotice, type Notice } from "../shared/expiry";
+import { needsAction, noticeFor, noticeText, timeLeftText, worstNotice, type Notice } from "../shared/expiry";
 import { useStatuses, useWarnDays } from "./data";
 
 export const SCREEN_ID = "status";
@@ -10,6 +10,8 @@ function rowLabel(notice: Notice): string {
   if (notice.level === "ended") return "Sign-in ended";
   if (notice.level === "signed_out") return "Not signed in";
   if (notice.level === "warning") return `Sign-in ends ${timeLeftText(notice.daysLeft ?? 0)}`;
+  if (notice.level === "unavailable") return "Sign-in status unknown";
+  if (notice.level === "no_end_date") return "Sign-in end date unknown";
   return "Sign-in";
 }
 
@@ -29,7 +31,10 @@ export function SignInItem({ theme, currentScreen, openScreen }: PluginSidebarIt
     notice: noticeFor(status, Date.now(), warnDays),
   }));
   const worst = worstNotice(perProvider.map((entry) => entry.notice));
+  // The row shows every state that is not plainly fine. A toast is raised
+  // only for the states that the user must act on.
   const messages = perProvider
+    .filter((entry) => needsAction(entry.notice.level))
     .map((entry) => noticeText(entry.label, entry.notice))
     .filter((message): message is string => message !== null);
   const announcement = messages.join(". ");
@@ -46,9 +51,15 @@ export function SignInItem({ theme, currentScreen, openScreen }: PluginSidebarIt
   }, [announcement, worst.level, toast]);
 
   const NoticeIcon = useMemo(() => {
-    const color = worst.level === "warning" ? theme.colors.statusWarning : theme.colors.statusDanger;
+    const unknown = worst.level === "unavailable" || worst.level === "no_end_date";
+    const color = unknown
+      ? theme.colors.foregroundMuted
+      : worst.level === "warning"
+        ? theme.colors.statusWarning
+        : theme.colors.statusDanger;
+    const name = unknown ? "CircleHelp" : "TriangleAlert";
     return function NoticeIcon({ size }: PluginIconProps) {
-      return <Icon name="TriangleAlert" size={size} color={color} />;
+      return <Icon name={name} size={size} color={color} />;
     };
   }, [worst.level, theme]);
 

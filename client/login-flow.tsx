@@ -2,7 +2,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { copyText, useToast } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Text, TextInput, View } from "react-native";
 import {
   cancelLoginRpc,
@@ -11,8 +11,10 @@ import {
   submitCodeRpc,
   type LoginSnapshot,
 } from "../shared/contracts";
+import { isAllowedLoginLink, LOGIN_LINK_HOSTS } from "../shared/links";
 import type { ProviderId } from "../shared/providers";
 import { isActivePhase, loginKey, STATUS_KEY, useLoginState } from "./data";
+import { clearLoginTraces, loginMutationKey } from "./login-traces";
 import { Button, Callout } from "./parts";
 
 // The app wraps a handler error as "Request failed: <message> requestType=… code=…".
@@ -39,23 +41,43 @@ export function LoginFlow(props: {
   const submitCode = useRpc(submitCodeRpc);
   const cancelLogin = useRpc(cancelLoginRpc);
 
+  const mounted = useRef(true);
   const apply = (snapshot: LoginSnapshot) => {
+    // An answer that arrives after the screen closed is dropped, not cached.
+    if (!mounted.current) return;
     queryClient.setQueryData(loginKey(provider), snapshot);
     if (!isActivePhase(snapshot.phase)) {
       setCode("");
       void queryClient.invalidateQueries({ queryKey: STATUS_KEY });
     }
   };
-  const start = useMutation({ mutationFn: () => startLogin({ provider }), onSuccess: apply });
+  // The answers of these calls can hold the sign-in link. They share one key,
+  // are not kept after use, and are removed when this component goes away.
+  const mutationKey = loginMutationKey(provider);
+  const start = useMutation({ mutationKey, gcTime: 0, mutationFn: () => startLogin({ provider }), onSuccess: apply });
   const submit = useMutation({
+    mutationKey,
+    gcTime: 0,
     mutationFn: () => submitCode({ provider, code: code.trim() }),
     onSuccess: apply,
   });
-  const cancel = useMutation({ mutationFn: () => cancelLogin({ provider }), onSuccess: apply });
+  const cancel = useMutation({ mutationKey, gcTime: 0, mutationFn: () => cancelLogin({ provider }), onSuccess: apply });
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      clearLoginTraces(queryClient, provider);
+    };
+  }, [queryClient, provider]);
 
   const snapshot = login.data;
   const phase = start.isPending ? "starting" : submit.isPending ? "verifying" : (snapshot?.phase ?? "idle");
-  const url = snapshot?.url ?? null;
+  // The daemon accepts only links to the provider's known hosts. Check again
+  // here, so the app never shows or opens a link to another host.
+  const reportedUrl = snapshot?.url ?? null;
+  const url = reportedUrl && isAllowedLoginLink(reportedUrl, LOGIN_LINK_HOSTS[provider]) ? reportedUrl : null;
+  const refusedLink = phase === "awaiting_code" && reportedUrl !== null && url === null;
   const requestError = start.error ?? submit.error ?? cancel.error;
   const muted = { color: theme.colors.foregroundMuted, fontSize: 13, lineHeight: 18 } as const;
   const body = { color: theme.colors.foreground, fontSize: 14, lineHeight: 20 } as const;
@@ -110,6 +132,17 @@ export function LoginFlow(props: {
         <Callout theme={theme} tone="danger">
           {errorText(requestError)}
         </Callout>
+      ) : null}
+
+      {refusedLink ? (
+        <View style={{ gap: 12 }}>
+          <Callout theme={theme} tone="danger">
+            The host sent a sign-in link that this plugin does not accept. The link is not shown. Cancel and try again.
+          </Callout>
+          <View style={{ flexDirection: "row" }}>
+            <Button theme={theme} label="Cancel" disabled={cancel.isPending} onPress={() => cancel.mutate()} />
+          </View>
+        </View>
       ) : null}
 
       {phase === "starting" ? <Text style={muted}>Starting the sign-in on the host…</Text> : null}

@@ -1,6 +1,8 @@
 // Decides what the user is told about a sign-in. Plain functions, no runtime APIs.
 
-export type NoticeLevel = "none" | "warning" | "ended" | "signed_out";
+// "no_end_date": signed in, but the provider reported no usable end date.
+// "unavailable": the status could not be read at all.
+export type NoticeLevel = "none" | "no_end_date" | "unavailable" | "warning" | "ended" | "signed_out";
 
 export interface Notice {
   level: NoticeLevel;
@@ -17,16 +19,25 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function noticeFor(status: ExpiryInput, nowMs: number, warnDays: number): Notice {
   if (status.state === "signed_out") return { level: "signed_out", daysLeft: null };
-  if (status.state !== "signed_in" || !status.expiresAt) return { level: "none", daysLeft: null };
+  if (status.state !== "signed_in") return { level: "unavailable", daysLeft: null };
+  // Never read a missing or unreadable end date as "nothing to do".
+  if (typeof status.expiresAt !== "string") return { level: "no_end_date", daysLeft: null };
   const endMs = Date.parse(status.expiresAt);
-  if (Number.isNaN(endMs)) return { level: "none", daysLeft: null };
+  if (Number.isNaN(endMs)) return { level: "no_end_date", daysLeft: null };
   const leftMs = endMs - nowMs;
   if (leftMs <= 0) return { level: "ended", daysLeft: 0 };
   const daysLeft = Math.ceil(leftMs / DAY_MS);
   return { level: leftMs <= warnDays * DAY_MS ? "warning" : "none", daysLeft };
 }
 
-const SEVERITY: Record<NoticeLevel, number> = { none: 0, warning: 1, signed_out: 2, ended: 3 };
+const SEVERITY: Record<NoticeLevel, number> = {
+  none: 0,
+  no_end_date: 1,
+  unavailable: 2,
+  warning: 3,
+  signed_out: 4,
+  ended: 5,
+};
 
 // The notice that matters most across all providers.
 export function worstNotice(notices: readonly Notice[]): Notice {
@@ -47,6 +58,11 @@ export function timeLeftText(daysLeft: number): string {
   return `in ${daysLeft} days`;
 }
 
+/** True for the states that the user must act on. Only these raise a toast. */
+export function needsAction(level: NoticeLevel): boolean {
+  return level === "warning" || level === "ended" || level === "signed_out";
+}
+
 export function noticeText(label: string, notice: Notice): string | null {
   switch (notice.level) {
     case "ended":
@@ -55,6 +71,10 @@ export function noticeText(label: string, notice: Notice): string | null {
       return `${label} is not signed in`;
     case "warning":
       return `${label} sign-in ends ${timeLeftText(notice.daysLeft ?? 0)}`;
+    case "no_end_date":
+      return `${label} reports no end date for the sign-in`;
+    case "unavailable":
+      return `${label} sign-in status is not available`;
     default:
       return null;
   }
