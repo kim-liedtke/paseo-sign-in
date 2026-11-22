@@ -1,0 +1,104 @@
+import type { LoginSnapshot, ProviderStatus } from "../../shared/contracts";
+import type { ProviderId } from "../../shared/providers";
+import type { Launch } from "./launch";
+import { LoginSession, type LoginState } from "./login-session";
+import { runToEnd, type RunResult } from "./process";
+import type { AuthProvider } from "./provider";
+
+/** The provider-specific part of a status answer. */
+export type StatusFields = Omit<ProviderStatus, "provider" | "label" | "checkedAt">;
+
+export interface CliProviderDefinition {
+  id: ProviderId;
+  label: string;
+  /** How the daemon would start this provider's CLI. */
+  resolveLaunch(): Promise<Launch>;
+  statusArgs: readonly string[];
+  /** Turns the output of the status command into status fields. */
+  parseStatus(result: RunResult): StatusFields;
+  loginArgs: readonly string[];
+  /** Returns the sign-in link once the CLI has printed it, else null. */
+  findLoginUrl(output: string): string | null;
+  statusTimeoutMs?: number;
+  loginTimeoutMs?: number;
+  linkTimeoutMs?: number;
+  now?: () => number;
+}
+
+export const UNAVAILABLE: StatusFields = {
+  state: "unavailable",
+  email: null,
+  organization: null,
+  plan: null,
+  method: null,
+  expiresAt: null,
+  detail: null,
+};
+
+/**
+ * An AuthProvider for a CLI that has a status command and an interactive
+ * sign-in command that prints a link and reads a code. A provider with that
+ * shape needs only a definition; one with another shape implements
+ * AuthProvider itself.
+ */
+export function createCliProvider(definition: CliProviderDefinition): AuthProvider & { killNow(): void } {
+  const now = definition.now ?? Date.now;
+  const session = new LoginSession({
+    resolveLaunch: definition.resolveLaunch,
+    loginArgs: definition.loginArgs,
+    findUrl: definition.findLoginUrl,
+    timeoutMs: definition.loginTimeoutMs,
+    linkTimeoutMs: definition.linkTimeoutMs,
+    now,
+  });
+  const toSnapshot = (state: LoginState): LoginSnapshot => ({ provider: definition.id, ...state });
+
+  return {
+    id: definition.id,
+    label: definition.label,
+
+    async status(): Promise<ProviderStatus> {
+      let fields: StatusFields;
+      try {
+        const launch = await definition.resolveLaunch();
+        const result = await runToEnd(launch, definition.statusArgs, definition.statusTimeoutMs ?? 15_000);
+        if (result.spawnError === "ENOENT") {
+          fields = { ...UNAVAILABLE, detail: "The provider command was not found on the host." };
+        } else if (result.spawnError) {
+          fields = { ...UNAVAILABLE, detail: "The provider command could not be started." };
+        } else if (result.timedOut) {
+          fields = { ...UNAVAILABLE, detail: "The status command did not answer in time." };
+        } else {
+          fields = definition.parseStatus(result);
+        }
+      } catch {
+        fields = { ...UNAVAILABLE, detail: "The status could not be read." };
+      }
+      return {
+        provider: definition.id,
+        label: definition.label,
+        ...fields,
+        checkedAt: new Date(now()).toISOString(),
+      };
+    },
+
+    async startLogin() {
+      return toSnapshot(await session.start());
+    },
+    async submitCode(code: string) {
+      return toSnapshot(await session.submitCode(code));
+    },
+    async cancel() {
+      return toSnapshot(await session.cancel());
+    },
+    loginState() {
+      return toSnapshot(session.snapshot());
+    },
+    dispose() {
+      return session.dispose();
+    },
+    killNow() {
+      session.killNow();
+    },
+  };
+}
