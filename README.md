@@ -10,7 +10,7 @@ On a shared host, many users have no terminal access. This plugin gives each use
 
 ## What it does
 
-- **Status.** A screen shows, for each provider: signed in or not, the account, the plan, and when the sign-in ends. It refreshes when you open it and every 15 minutes.
+- **Status.** A screen shows, for each provider: signed in or not, the account, the plan, and when the sign-in ends. It refreshes when you open it and every 15 minutes. The daemon reuses a status answer for a few seconds, so several open clients do not each start the status command.
 - **Notice.** A row in the sidebar footer changes when a sign-in ends within N days (default 7), has ended, or is missing. A toast shows the same message once.
 - **Sign in.** A button starts the provider's sign-in on the host. The screen shows the link, takes the code you paste, gives it to the sign-in and shows the result.
 
@@ -52,6 +52,8 @@ Sidebar footer row, by state:
  ⚠  Sign-in ends in 3 days       inside the warning time
  ⚠  Sign-in ended                the end date has passed
  ⚠  Not signed in                no sign-in on the host
+ ?  Sign-in end date unknown     signed in, but no end date reported
+ ?  Sign-in status unknown       the status could not be read
 ```
 
 After a successful sign-in, start a new agent. Paseo's documentation says that a running agent keeps the sign-in it started with.
@@ -128,20 +130,22 @@ A Paseo plugin is trusted code. Its server part runs without a sandbox, with the
 What this plugin does and does not do:
 
 - **No credential files.** It never opens a credential file. All state comes from the provider's own status command.
-- **No stored secrets.** It does not read, store or send tokens. The sign-in link and the pasted code are held in memory for the one sign-in and dropped when it ends. They are not written to a log or a file. Result messages that come from the CLI have links and the code removed before they are shown.
+- **No stored secrets.** It does not read, store or send tokens. The sign-in link and the pasted code are held in memory for the one sign-in and dropped when it ends. They are not written to a log or a file. The app removes its cached copies of the link when the sign-in screen closes. Result messages that come from the CLI have links and the code removed before they are shown.
 - **No network access of its own.** No telemetry, no update check, no remote assets. Only the provider CLI talks to the provider.
 - **No shell.** Processes are started from an argument list with `shell: false`. The only program it starts is the provider CLI, with the command that the daemon configuration gives for that provider.
-- **One sign-in at a time for each provider.** A second request returns the running sign-in. An unfinished sign-in is stopped after five minutes: SIGTERM, then SIGKILL. When the plugin is reloaded or disabled, or the daemon stops it, the sign-in process is stopped too.
+- **Sign-in links are checked.** The plugin waits until the CLI has printed the whole link. It accepts only an `https` link to a host on a fixed list for the provider (`shared/links.ts`; for Claude Code: `claude.com`), without user, password or port. Any other link ends the sign-in as failed and is not sent to the app. The app checks the link again before it shows or opens it.
+- **One sign-in at a time for each provider.** A second request returns the running sign-in. No new sign-in starts while an old one is still being stopped. An unfinished sign-in is stopped after five minutes: SIGTERM, then SIGKILL. When the plugin is reloaded or disabled, or the daemon stops it, the sign-in process is stopped too.
 - **Nothing that changes agents.** No system-prompt changes, no tools for agents, no automatic answers to permission requests, no automatic prompts. The plugin registers no lifecycle hooks.
 - **No file writes.** The plugin writes no files. Its one setting is stored by Paseo's settings API.
-- **Narrow RPC.** A request from the app carries a provider id from a fixed list (`shared/providers.ts`) and, for the code, a string of limited length without control characters. It cannot carry a path, a command or arguments. Inputs are validated with Zod before a handler runs.
+- **Narrow RPC.** A request from the app carries a provider id from a fixed list (`shared/providers.ts`) and, for the code, a string of limited length without control characters or Unicode line separators. It cannot carry a path, a command or arguments. Inputs are validated with Zod before a handler runs.
 - **No install scripts and no runtime dependencies.** `package.json` has development dependencies only, for typechecking and tests.
 
 What the plugin can access, and what you should know:
 
 - The server part can run the provider CLI as the daemon account. That is what it is for.
 - The status answer contains the account email, the organization name and the plan. The plugin sends it to your Paseo app, where the screen shows it. It is not written to the plugin log.
-- The sign-in link goes from the daemon to your app, and the code goes back, over the connection that Paseo already uses between app and daemon. Anyone who can use your daemon connection can start a sign-in. They cannot finish it without approving in a browser as the account owner.
+- The sign-in link goes from the daemon to your app, and the code goes back, over the connection that Paseo already uses between app and daemon.
+- **Anyone who can use your daemon connection can change which account the host is signed in to.** They can start a sign-in, approve it in a browser with their own provider account, and submit the code. The host is then signed in to their account, and new agents run on it. The plugin cannot tell which person approved in the browser. This is not a new right: a person with access to your daemon can already run commands on the host through agents and terminals. Protect the daemon connection (password, pairing) as you protect a shell on the host, and check the account that the screen shows after a sign-in.
 - The daemon writes the message of a failed plugin request to its own log. The plugin's error messages are fixed texts and contain no link, code or account data.
 - `claude auth login` tries to open a browser on the host. On a server without a desktop this does nothing.
 
@@ -158,6 +162,7 @@ To report a security problem, open a private security advisory on the repository
 - The notice shows in the app while it is open. There are no push notifications and no email.
 - A running agent keeps its old sign-in. Start a new agent after you signed in again.
 - If the CLI changes the text or the order of its sign-in prompts, the sign-in can fail. The plugin then reports that no link was shown.
+- If a later CLI version prints its sign-in link on another host than `claude.com`, the sign-in fails until that host is added to `shared/links.ts`.
 - Not tested on Windows or macOS.
 
 ## Development
@@ -168,7 +173,7 @@ npm run typecheck
 npm test
 ```
 
-The tests need no account and no real sign-in. They cover the provider-neutral core (one sign-in at a time, time limit, stopping the process, removal of link and code from messages), the launch resolution, the expiry rules and the parsing of the status output. The sign-in tests run against a small stand-in CLI in `test/fixtures/`.
+The tests need no account and no real sign-in. They cover the provider-neutral core (one sign-in at a time, time limit, stopping the process, removal of link and code from messages, overlapping cancel and time-out, the checks on the sign-in link), the launch resolution, the expiry rules and the parsing of the status output. The sign-in tests run against a small stand-in CLI in `test/fixtures/`.
 
 One more test file runs the installed `claude` CLI with a new, empty config folder. It checks that the CLI shows a link without a terminal and rejects a wrong code. It does not touch an existing sign-in. It is off by default:
 
