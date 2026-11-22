@@ -2,7 +2,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { copyText, useToast } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Text, TextInput, View } from "react-native";
 import {
   cancelLoginRpc,
@@ -14,8 +14,9 @@ import {
 import { isAllowedLoginLink, LOGIN_LINK_HOSTS } from "../shared/links";
 import type { ProviderId } from "../shared/providers";
 import { isActivePhase, loginKey, STATUS_KEY, useLoginState } from "./data";
-import { clearLoginTraces, loginMutationKey } from "./login-traces";
+import { loginMutationKey } from "./login-traces";
 import { Button, Callout } from "./parts";
+import { useLoginCleanup } from "./use-login-cleanup";
 
 // The app wraps a handler error as "Request failed: <message> requestType=… code=…".
 function errorText(error: unknown): string {
@@ -41,7 +42,8 @@ export function LoginFlow(props: {
   const submitCode = useRpc(submitCodeRpc);
   const cancelLogin = useRpc(cancelLoginRpc);
 
-  const mounted = useRef(true);
+  // Clears the cached link when this component goes away; false after that.
+  const mounted = useLoginCleanup(queryClient, provider);
   const apply = (snapshot: LoginSnapshot) => {
     // An answer that arrives after the screen closed is dropped, not cached.
     if (!mounted.current) return;
@@ -63,13 +65,6 @@ export function LoginFlow(props: {
   });
   const cancel = useMutation({ mutationKey, gcTime: 0, mutationFn: () => cancelLogin({ provider }), onSuccess: apply });
 
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      clearLoginTraces(queryClient, provider);
-    };
-  }, [queryClient, provider]);
 
   const snapshot = login.data;
   const phase = start.isPending ? "starting" : submit.isPending ? "verifying" : (snapshot?.phase ?? "idle");
