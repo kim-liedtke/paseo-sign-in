@@ -6,13 +6,13 @@
     "paseo-plugin.json",
     "OVERVIEW.md",
     "OVERVIEW.*.md",
-    "index.client.ts",
     "index.client.tsx",
     "index.server.ts",
-    "index.server.tsx",
     "client/",
     "server/",
-    "shared/"
+    "shared/",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json",
