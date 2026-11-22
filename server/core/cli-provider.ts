@@ -22,9 +22,27 @@ export interface CliProviderDefinition {
   /** A status answer is reused for this long, and a running status call is shared. */
   statusCacheMs?: number;
   statusTimeoutMs?: number;
+  /** The lookup of the launch for a status call is given up after this time. */
+  launchTimeoutMs?: number;
   loginTimeoutMs?: number;
   linkTimeoutMs?: number;
   now?: () => number;
+}
+
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timed out")), ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 export const UNAVAILABLE: StatusFields = {
@@ -67,7 +85,9 @@ export function createCliProvider(definition: CliProviderDefinition): AuthProvid
   async function readStatus(): Promise<ProviderStatus> {
     let fields: StatusFields;
     try {
-      const launch = await definition.resolveLaunch();
+      // Every step of a status call has a time limit. A running call is shared
+      // by all callers, so one that never ended would block every later one.
+      const launch = await withTimeout(definition.resolveLaunch(), definition.launchTimeoutMs ?? 5000);
       const result = await runToEnd(launch, definition.statusArgs, definition.statusTimeoutMs ?? 15_000);
       if (result.spawnError === "ENOENT") {
         fields = { ...UNAVAILABLE, detail: "The provider command was not found on the host." };

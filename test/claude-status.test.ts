@@ -170,6 +170,29 @@ describe("Claude provider: status cache", () => {
     expect(countRuns(countFile)).toBe(2);
   });
 
+  it("gives up a status call whose launch lookup never answers, and the next call starts fresh", async () => {
+    const { launch } = fakeLaunch({ FAKE_STATUS: SIGNED_IN });
+    let lookups = 0;
+    const provider = createClaudeProvider(
+      () => {
+        lookups += 1;
+        // The first lookup hangs for ever. Later ones answer.
+        return lookups === 1 ? new Promise(() => {}) : Promise.resolve(launch);
+      },
+      { launchTimeoutMs: 200, statusCacheMs: 0 },
+    );
+    const before = Date.now();
+    const [first, shared] = await Promise.all([provider.status(), provider.status()]);
+    expect(Date.now() - before).toBeLessThan(1000);
+    expect(first).toMatchObject({ state: "unavailable", detail: "The status could not be read." });
+    expect(shared.checkedAt).toBe(first.checkedAt);
+    expect(lookups).toBe(1);
+
+    const next = await provider.status();
+    expect(next.state).toBe("signed_in");
+    expect(lookups).toBe(2);
+  });
+
   it("asks again after a sign-in step, because that changes the status", async () => {
     const { provider, countFile } = counted();
     await provider.status();
