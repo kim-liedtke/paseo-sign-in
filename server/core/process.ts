@@ -37,17 +37,73 @@ export function signalProcess(child: ChildProcessWithoutNullStreams, signal: Nod
 }
 
 /** Closes our ends of the pipes. A helper that still holds the other ends cannot keep us waiting. */
-function releasePipes(child: ChildProcessWithoutNullStreams): void {
+export function releasePipes(child: ChildProcessWithoutNullStreams): void {
   child.stdin.destroy();
   child.stdout.destroy();
   child.stderr.destroy();
 }
 
 /**
- * Stops a child: SIGTERM, then SIGKILL after the grace period. Resolves when
- * the process has exited. It does not wait for the pipes to close, because a
- * helper process can hold them open. If no exit is reported after SIGKILL, it
- * resolves anyway after a hard deadline.
+ * True while the process group that the child leads has a member. A group
+ * outlives its leader as long as one member runs, and its id cannot be given
+ * to another process in that time.
+ */
+function groupHasMembers(pid: number): boolean {
+  if (IS_WINDOWS) return false;
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Stops what is left of the process group of a child that has ended by
+ * itself: SIGTERM, then SIGKILL after the grace period. Does nothing when the
+ * group is empty. Resolves when the group is empty, or at a hard deadline
+ * after the SIGKILL.
+ */
+export function stopGroup(
+  child: ChildProcessWithoutNullStreams,
+  graceMs: number,
+  hardDeadlineMs: number = HARD_DEADLINE_MS,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const pid = child.pid;
+    if (pid === undefined || !groupHasMembers(pid)) return resolve();
+    const signal = (name: NodeJS.Signals) => {
+      try {
+        process.kill(-pid, name);
+      } catch {
+        // The group is already gone.
+      }
+    };
+    let giveUp: NodeJS.Timeout | null = null;
+    const done = () => {
+      clearInterval(poll);
+      clearTimeout(force);
+      if (giveUp) clearTimeout(giveUp);
+      resolve();
+    };
+    const poll = setInterval(() => {
+      if (!groupHasMembers(pid)) done();
+    }, 25);
+    const force = setTimeout(() => {
+      if (groupHasMembers(pid)) signal("SIGKILL");
+      giveUp = setTimeout(done, hardDeadlineMs);
+    }, graceMs);
+    signal("SIGTERM");
+  });
+}
+
+/**
+ * Stops a child and the process group it leads: SIGTERM, then SIGKILL after
+ * the grace period. Resolves when the child has exited and its group is
+ * empty. The SIGKILL also comes when the child itself ended on SIGTERM but a
+ * member of its group ignored the signal. It does not wait for the pipes to
+ * close, because a process outside the group can hold them open. If nothing
+ * is reported after SIGKILL, it resolves anyway after a hard deadline.
  */
 export function stopProcess(
   child: ChildProcessWithoutNullStreams,
@@ -55,22 +111,41 @@ export function stopProcess(
   hardDeadlineMs: number = HARD_DEADLINE_MS,
 ): Promise<void> {
   return new Promise((resolve) => {
+    const pid = child.pid;
+    let finished = false;
     let force: NodeJS.Timeout | null = null;
     let giveUp: NodeJS.Timeout | null = null;
+    let poll: NodeJS.Timeout | null = null;
     const done = () => {
+      if (finished) return;
+      finished = true;
       if (force) clearTimeout(force);
       if (giveUp) clearTimeout(giveUp);
-      child.off("exit", done);
+      if (poll) clearInterval(poll);
+      child.off("exit", check);
       child.off("error", done);
       releasePipes(child);
       resolve();
     };
+    const gone = () => hasExited(child) && (pid === undefined || !groupHasMembers(pid));
+    function check() {
+      if (gone()) done();
+    }
     // No pid: the process never started. Nothing to stop.
-    if (hasExited(child) || child.pid === undefined) return done();
-    child.once("exit", done);
+    if (pid === undefined || gone()) return done();
+    child.once("exit", check);
     child.once("error", done);
+    // The exit of the leader does not tell when the last group member is gone.
+    poll = setInterval(check, 50);
     force = setTimeout(() => {
       signalProcess(child, "SIGKILL");
+      if (groupHasMembers(pid)) {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          // The group is already gone.
+        }
+      }
       giveUp = setTimeout(done, hardDeadlineMs);
     }, graceMs);
     signalProcess(child, "SIGTERM");

@@ -58,6 +58,38 @@ export function timeLeftText(daysLeft: number): string {
   return `in ${daysLeft} days`;
 }
 
+/**
+ * The one notice for the sidebar row. A status call that failed is shown as
+ * "unavailable": an old answer must not look like the current state. Before
+ * the first answer there is nothing to show.
+ */
+export function overallNotice(
+  statuses: readonly ExpiryInput[] | undefined,
+  callFailed: boolean,
+  nowMs: number,
+  warnDays: number,
+): Notice {
+  if (callFailed) return { level: "unavailable", daysLeft: null };
+  return worstNotice((statuses ?? []).map((status) => noticeFor(status, nowMs, warnDays)));
+}
+
+/**
+ * Decides whether the sidebar raises a toast. A message is announced once and
+ * again only when it changes. A failed status call announces nothing and
+ * keeps what was announced, so the same message does not come back as a new
+ * toast when the next call works.
+ */
+export function nextAnnouncement(
+  remembered: string | null,
+  message: string,
+  callFailed: boolean,
+): { announce: string | null; remembered: string | null } {
+  if (callFailed) return { announce: null, remembered };
+  if (message === "") return { announce: null, remembered: null };
+  if (message === remembered) return { announce: null, remembered };
+  return { announce: message, remembered: message };
+}
+
 /** True for the states that the user must act on. Only these raise a toast. */
 export function needsAction(level: NoticeLevel): boolean {
   return level === "warning" || level === "ended" || level === "signed_out";

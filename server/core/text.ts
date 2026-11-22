@@ -15,19 +15,19 @@ export function stripTerminalCodes(text: string): string {
 const URL_PATTERN = /https?:\/\/[^\s"'<>]+/g;
 // A link counts only when whitespace follows it, so a link that is still
 // being printed is never taken.
-const TERMINATED_URL = /https?:\/\/[^\s"'<>]+(?=\s)/;
+const TERMINATED_URL = /https?:\/\/[^\s"'<>]+(?=\s)/g;
 
 /**
- * The first http(s) link in terminal output that is complete, or null. A link
- * is complete when whitespace or a line end follows it. Output can arrive in
- * pieces: text after an unfinished terminal sequence is not looked at.
+ * Every http(s) link in terminal output that is complete, in the order of the
+ * output. A link is complete when whitespace or a line end follows it. Output
+ * can arrive in pieces: text after an unfinished terminal sequence is not
+ * looked at. The caller decides which of the links it accepts.
  */
-export function findTerminatedUrl(output: string): string | null {
+export function findTerminatedUrls(output: string): string[] {
   let text = output.replace(OSC, "").replace(CSI, "").replace(OTHER_ESCAPE, "");
   const unfinished = text.indexOf("\u001b");
   if (unfinished !== -1) text = text.slice(0, unfinished);
-  const match = TERMINATED_URL.exec(text.replace(CONTROL, ""));
-  return match ? match[0] : null;
+  return text.replace(CONTROL, "").match(TERMINATED_URL) ?? [];
 }
 
 /**

@@ -13,7 +13,12 @@ export const CLAUDE_DEFAULT_COMMAND = ["claude"] as const;
  */
 export function createClaudeProvider(
   resolveLaunch: () => Promise<Launch>,
-  overrides: { statusCacheMs?: number } = {},
+  overrides: {
+    statusCacheMs?: number;
+    statusTimeoutMs?: number;
+    launchTimeoutMs?: number;
+    linkTimeoutMs?: number;
+  } = {},
 ) {
   return createCliProvider({
     id: "claude",

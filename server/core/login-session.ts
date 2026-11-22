@@ -2,8 +2,8 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { CODE_PATTERN, type LoginPhase } from "../../shared/contracts";
 import { isAllowedLoginLink } from "../../shared/links";
 import type { Launch } from "./launch";
-import { signalProcess, startProcess, stopProcess } from "./process";
-import { findTerminatedUrl, safeMessage } from "./text";
+import { releasePipes, signalProcess, startProcess, stopGroup, stopProcess } from "./process";
+import { findTerminatedUrls, safeMessage } from "./text";
 
 export interface LoginSessionOptions {
   /** How to start the provider CLI. Resolved again for every sign-in. */
@@ -18,6 +18,8 @@ export interface LoginSessionOptions {
   linkTimeoutMs?: number;
   /** Time between SIGTERM and SIGKILL when a sign-in is stopped. */
   killGraceMs?: number;
+  /** After the CLI exits, wait this long for the rest of its output, then record the result. */
+  exitGraceMs?: number;
   now?: () => number;
 }
 
@@ -33,6 +35,7 @@ const MAX_OUTPUT = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_LINK_TIMEOUT_MS = 30 * 1000;
 const DEFAULT_KILL_GRACE_MS = 2000;
+const DEFAULT_EXIT_GRACE_MS = 300;
 
 
 type Listener = (state: LoginState) => void;
@@ -42,6 +45,13 @@ interface Attempt {
   child: ChildProcessWithoutNullStreams | null;
   timer: NodeJS.Timeout | null;
   linkTimer: NodeJS.Timeout | null;
+  exitTimer: NodeJS.Timeout | null;
+  /** The CLI printed a complete link, but none that is accepted. */
+  sawOtherLink: boolean;
+  /** The result of the CLI's own exit was recorded. */
+  concluded: boolean;
+  /** Records the result of the CLI's own exit. Set once the CLI has exited. */
+  concludeNow: (() => void) | null;
   output: string;
   submittedCode: string | null;
   /** Set once the attempt is being stopped from our side. Shared by every caller. */
@@ -67,6 +77,8 @@ export class LoginSession {
   private current: Attempt | null = null;
   private listeners = new Set<Listener>();
   private starting: Promise<LoginState> | null = null;
+  /** Clean-ups of process groups whose CLI has ended by itself. */
+  private lingering = new Set<Promise<void>>();
 
   constructor(options: LoginSessionOptions) {
     this.options = {
@@ -76,6 +88,7 @@ export class LoginSession {
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       linkTimeoutMs: options.linkTimeoutMs ?? DEFAULT_LINK_TIMEOUT_MS,
       killGraceMs: options.killGraceMs ?? DEFAULT_KILL_GRACE_MS,
+      exitGraceMs: options.exitGraceMs ?? DEFAULT_EXIT_GRACE_MS,
       now: options.now ?? Date.now,
     };
   }
@@ -133,6 +146,7 @@ export class LoginSession {
   async dispose(): Promise<void> {
     const attempt = this.current;
     if (attempt) await this.finish(attempt, "cancelled", null);
+    await Promise.all(this.lingering);
     this.listeners.clear();
   }
 
@@ -146,6 +160,10 @@ export class LoginSession {
       child: null,
       timer: null,
       linkTimer: null,
+      exitTimer: null,
+      sawOtherLink: false,
+      concluded: false,
+      concludeNow: null,
       output: "",
       submittedCode: null,
       stopping: null,
@@ -154,24 +172,32 @@ export class LoginSession {
     const deadline = new Date(this.options.now() + this.options.timeoutMs).toISOString();
     this.setState({ phase: "starting", url: null, message: null, deadline });
 
+    // The timers start before the launch is resolved. If that lookup never
+    // answers, the link timer still ends the attempt.
+    attempt.timer = setTimeout(() => {
+      void this.finish(attempt, "timed_out", "The sign-in was not finished in time and was stopped.");
+    }, this.options.timeoutMs);
+    attempt.linkTimer = setTimeout(() => {
+      if (this.current !== attempt || this.state.phase !== "starting") return;
+      const message = attempt.sawOtherLink
+        ? "The provider showed no sign-in link that this plugin accepts."
+        : "The provider did not show a sign-in link.";
+      void this.finish(attempt, "failed", message);
+    }, this.options.linkTimeoutMs);
+
     let child: ChildProcessWithoutNullStreams;
     try {
-      const launch = await this.options.resolveLaunch();
-      // Cancelled while the launch was resolved: start nothing.
-      if (this.current !== attempt || attempt.stopping) return this.snapshot();
+      // Do not wait for the lookup longer than the attempt lives.
+      const ended = this.waitFor(() => this.current !== attempt).then(() => null);
+      const launch = await Promise.race([this.options.resolveLaunch(), ended]);
+      // Cancelled or timed out while the launch was resolved: start nothing.
+      if (!launch || this.current !== attempt || attempt.stopping) return this.snapshot();
       child = startProcess(launch, this.options.loginArgs);
     } catch {
       this.settle(attempt, "failed", "The provider command could not be started.");
       return this.snapshot();
     }
     attempt.child = child;
-    attempt.timer = setTimeout(() => {
-      void this.finish(attempt, "timed_out", "The sign-in was not finished in time and was stopped.");
-    }, this.options.timeoutMs);
-    attempt.linkTimer = setTimeout(() => {
-      if (this.current !== attempt || this.state.phase !== "starting") return;
-      void this.finish(attempt, "failed", "The provider did not show a sign-in link.");
-    }, this.options.linkTimeoutMs);
 
     const onData = (chunk: Buffer) => this.onOutput(attempt, chunk.toString("utf8"));
     child.stdout.on("data", onData);
@@ -184,9 +210,17 @@ export class LoginSession {
           : "The provider command could not be started.";
       if (!attempt.stopping) this.settle(attempt, "failed", message);
     });
-    child.on("close", (exitCode) => {
+    // The CLI ended by itself. Its exit code is the result of the sign-in.
+    const conclude = (exitCode: number | null) => {
       // An attempt that we stop is settled by finish(), not by its exit.
-      if (attempt.stopping) return;
+      if (attempt.stopping || attempt.concluded) return;
+      attempt.concluded = true;
+      releasePipes(child);
+      // The CLI is gone. Stop what it left in its process group, so that a
+      // sign-in leaves no process behind however it ended.
+      const cleanup = stopGroup(child, this.options.killGraceMs);
+      this.lingering.add(cleanup);
+      void cleanup.then(() => this.lingering.delete(cleanup));
       if (exitCode === 0) {
         this.settle(attempt, "succeeded", null);
       } else {
@@ -194,6 +228,15 @@ export class LoginSession {
         const detail = safeMessage(lastLines(attempt.output, 3), secrets);
         this.settle(attempt, "failed", detail || "The sign-in did not succeed.");
       }
+    };
+    // "close" comes when the pipes are closed, which is the normal case. A
+    // helper that the CLI started can keep the pipes open long after the CLI
+    // is gone. So "exit" also records the result, after a short time in which
+    // the rest of the output can arrive.
+    child.on("close", (exitCode) => conclude(exitCode));
+    child.on("exit", (exitCode) => {
+      attempt.concludeNow = () => conclude(exitCode);
+      attempt.exitTimer = setTimeout(() => conclude(exitCode), this.options.exitGraceMs);
     });
 
     return this.waitFor((state) => this.current !== attempt || state.phase !== "starting");
@@ -203,15 +246,18 @@ export class LoginSession {
     if (this.current !== attempt || attempt.stopping) return;
     attempt.output = (attempt.output + text).slice(-MAX_OUTPUT);
     if (this.state.phase !== "starting") return;
-    // Wait until the CLI has printed the whole link. Output arrives in pieces.
-    const url = findTerminatedUrl(attempt.output);
-    if (!url) return;
-    // Output before the code is not needed again. Drop it, it contains the link.
-    attempt.output = "";
-    if (!isAllowedLoginLink(url, this.options.allowedLinkHosts)) {
-      void this.finish(attempt, "failed", "The provider showed a sign-in link that this plugin does not accept.");
+    // Wait until the CLI has printed a whole link. Output arrives in pieces.
+    // A CLI can print other links first, for example an update notice. Links
+    // that are not accepted are skipped, never shown. The link timer ends the
+    // sign-in if no accepted link arrives.
+    const links = findTerminatedUrls(attempt.output);
+    const url = links.find((link) => isAllowedLoginLink(link, this.options.allowedLinkHosts));
+    if (!url) {
+      if (links.length > 0) attempt.sawOtherLink = true;
       return;
     }
+    // Output before the code is not needed again. Drop it, it contains the link.
+    attempt.output = "";
     this.setState({ phase: "awaiting_code", url });
   }
 
@@ -224,6 +270,13 @@ export class LoginSession {
   private finish(attempt: Attempt, phase: LoginPhase, message: string | null): Promise<void> {
     if (attempt.stopping) return attempt.stopping;
     if (this.current !== attempt) return Promise.resolve();
+    // The CLI has already ended by itself and its result is only waiting for
+    // the rest of the output. That result is the truth: record it, and not a
+    // cancel or a time-out that arrived a moment later.
+    if (attempt.concludeNow) {
+      attempt.concludeNow();
+      return Promise.resolve();
+    }
     attempt.stopping = (async () => {
       if (attempt.child) await stopProcess(attempt.child, this.options.killGraceMs);
       this.settle(attempt, phase, message);
@@ -235,6 +288,8 @@ export class LoginSession {
   private settle(attempt: Attempt, phase: LoginPhase, message: string | null): void {
     if (attempt.timer) clearTimeout(attempt.timer);
     if (attempt.linkTimer) clearTimeout(attempt.linkTimer);
+    if (attempt.exitTimer) clearTimeout(attempt.exitTimer);
+    attempt.exitTimer = null;
     attempt.timer = null;
     attempt.linkTimer = null;
     attempt.child = null;

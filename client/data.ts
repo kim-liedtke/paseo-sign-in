@@ -1,19 +1,17 @@
 import { useRpc, useSettings } from "@getpaseo/plugin/client";
 import { useQuery } from "@tanstack/react-query";
-import { listStatusRpc, loginStateRpc, type LoginPhase } from "../shared/contracts";
+import { isActiveLoginPhase, listStatusRpc, loginStateRpc } from "../shared/contracts";
 import type { ProviderId } from "../shared/providers";
 import { DEFAULT_WARN_DAYS, noticeSettings } from "../shared/settings";
-import { loginKey } from "./login-traces";
+import { loginKey, STATUS_KEY } from "./login-traces";
 
-export const STATUS_KEY = ["sign-in", "status"] as const;
-export { loginKey };
+export { loginKey, STATUS_KEY };
+export const isActivePhase = isActiveLoginPhase;
 
 // The status is read when a surface opens and then on this slow timer.
 const STATUS_REFRESH_MS = 15 * 60 * 1000;
 const LOGIN_POLL_MS = 3000;
 
-const ACTIVE_PHASES: readonly LoginPhase[] = ["starting", "awaiting_code", "verifying"];
-export const isActivePhase = (phase: LoginPhase | undefined) => !!phase && ACTIVE_PHASES.includes(phase);
 
 export function useStatuses() {
   const listStatus = useRpc(listStatusRpc);

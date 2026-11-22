@@ -22,9 +22,27 @@ export interface CliProviderDefinition {
   /** A status answer is reused for this long, and a running status call is shared. */
   statusCacheMs?: number;
   statusTimeoutMs?: number;
+  /** The lookup of the launch for a status call is given up after this time. */
+  launchTimeoutMs?: number;
   loginTimeoutMs?: number;
   linkTimeoutMs?: number;
   now?: () => number;
+}
+
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timed out")), ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 export const UNAVAILABLE: StatusFields = {
@@ -57,7 +75,9 @@ export function createCliProvider(definition: CliProviderDefinition): AuthProvid
   const statusCacheMs = definition.statusCacheMs ?? 5000;
   // One status call at a time. Several clients and surfaces ask at the same
   // moment, and each call starts a process.
-  let cached: { at: number; value: Promise<ProviderStatus> } | null = null;
+  // A running call is shared for as long as it runs, also when that is longer
+  // than the cache time. A finished answer is reused for the cache time.
+  let cached: { value: Promise<ProviderStatus>; settledAt: number | null } | null = null;
   const forgetStatus = () => {
     cached = null;
   };
@@ -65,7 +85,9 @@ export function createCliProvider(definition: CliProviderDefinition): AuthProvid
   async function readStatus(): Promise<ProviderStatus> {
     let fields: StatusFields;
     try {
-      const launch = await definition.resolveLaunch();
+      // Every step of a status call has a time limit. A running call is shared
+      // by all callers, so one that never ended would block every later one.
+      const launch = await withTimeout(definition.resolveLaunch(), definition.launchTimeoutMs ?? 5000);
       const result = await runToEnd(launch, definition.statusArgs, definition.statusTimeoutMs ?? 15_000);
       if (result.spawnError === "ENOENT") {
         fields = { ...UNAVAILABLE, detail: "The provider command was not found on the host." };
@@ -92,8 +114,13 @@ export function createCliProvider(definition: CliProviderDefinition): AuthProvid
     label: definition.label,
 
     status(): Promise<ProviderStatus> {
-      if (cached && now() - cached.at < statusCacheMs) return cached.value;
-      const entry = { at: now(), value: readStatus() };
+      if (cached && (cached.settledAt === null || now() - cached.settledAt < statusCacheMs)) {
+        return cached.value;
+      }
+      const entry: NonNullable<typeof cached> = { value: readStatus(), settledAt: null };
+      void entry.value.then(() => {
+        entry.settledAt = now();
+      });
       cached = entry;
       return entry.value;
     },

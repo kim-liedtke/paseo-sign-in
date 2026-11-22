@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { needsAction, noticeFor, noticeText, worstNotice, type ExpiryInput } from "../shared/expiry";
+import {
+  needsAction,
+  nextAnnouncement,
+  noticeFor,
+  noticeText,
+  overallNotice,
+  worstNotice,
+  type ExpiryInput,
+} from "../shared/expiry";
 
 const now = Date.parse("2030-01-10T12:00:00.000Z");
 const signedIn = (expiresAt: string | null) => ({ state: "signed_in" as const, expiresAt });
@@ -85,5 +93,54 @@ describe("noticeText", () => {
     expect(needsAction("no_end_date")).toBe(false);
     expect(needsAction("unavailable")).toBe(false);
     expect(["warning", "ended", "signed_out"].every((level) => needsAction(level as "warning"))).toBe(true);
+  });
+});
+
+describe("overallNotice", () => {
+  const fine = signedIn("2030-02-10T12:00:00.000Z");
+  const soon = signedIn("2030-01-12T12:00:00.000Z");
+
+  it("shows a failed status call as unavailable, also when an old answer exists", () => {
+    expect(overallNotice(undefined, true, now, 7).level).toBe("unavailable");
+    expect(overallNotice([fine], true, now, 7).level).toBe("unavailable");
+    expect(overallNotice([soon], true, now, 7).level).toBe("unavailable");
+  });
+
+  it("shows nothing before the first answer", () => {
+    expect(overallNotice(undefined, false, now, 7).level).toBe("none");
+  });
+
+  it("shows the worst state of the providers when the call worked", () => {
+    expect(overallNotice([fine], false, now, 7).level).toBe("none");
+    expect(overallNotice([fine, soon], false, now, 7)).toEqual({ level: "warning", daysLeft: 2 });
+  });
+});
+
+describe("nextAnnouncement", () => {
+  const message = "Claude Code is not signed in";
+
+  it("announces a message once", () => {
+    expect(nextAnnouncement(null, message, false)).toEqual({ announce: message, remembered: message });
+    expect(nextAnnouncement(message, message, false)).toEqual({ announce: null, remembered: message });
+  });
+
+  it("does not repeat the message after a failed status call", () => {
+    let state = nextAnnouncement(null, message, false);
+    // The call fails. Depending on the cache there is an old answer or none.
+    state = nextAnnouncement(state.remembered, message, true);
+    expect(state.announce).toBeNull();
+    state = nextAnnouncement(state.remembered, "", true);
+    expect(state.announce).toBeNull();
+    // The call works again and reports the same state.
+    state = nextAnnouncement(state.remembered, message, false);
+    expect(state).toEqual({ announce: null, remembered: message });
+  });
+
+  it("announces again when the message changes or comes back after the state was fine", () => {
+    const other = "Claude Code sign-in has ended";
+    expect(nextAnnouncement(message, other, false)).toEqual({ announce: other, remembered: other });
+    const fine = nextAnnouncement(message, "", false);
+    expect(fine).toEqual({ announce: null, remembered: null });
+    expect(nextAnnouncement(fine.remembered, message, false).announce).toBe(message);
   });
 });

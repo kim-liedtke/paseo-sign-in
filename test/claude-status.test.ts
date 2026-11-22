@@ -111,7 +111,7 @@ describe("Claude provider with a stand-in CLI", () => {
 describe("Claude provider: sign-in link hosts", () => {
   it("refuses a link that is not on a Claude host", async () => {
     const { launch, pidFile } = fakeLaunch({ FAKE_LINK: "https://claude.com.evil.test/cai/oauth/authorize?state=1" });
-    const provider = createClaudeProvider(async () => launch);
+    const provider = createClaudeProvider(async () => launch, { linkTimeoutMs: 400 });
     const started = await provider.startLogin();
     expect(started).toMatchObject({ phase: "failed", url: null });
     expect(() => process.kill(Number(readFileSync(pidFile, "utf8")), 0)).toThrow();
@@ -152,6 +152,45 @@ describe("Claude provider: status cache", () => {
     await new Promise((resolve) => setTimeout(resolve, 350));
     await provider.status();
     expect(countRuns(countFile)).toBe(2);
+  });
+
+  it("shares a running call also when it runs longer than the cache time", async () => {
+    const { provider, countFile } = counted({ FAKE_STATUS_DELAY: "500" }, 100);
+    const first = provider.status();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    // 300 ms is past the cache time of 100 ms, but the first call still runs.
+    const second = provider.status();
+    expect((await second).checkedAt).toBe((await first).checkedAt);
+    expect(countRuns(countFile)).toBe(1);
+    // The cache time counts from the answer, not from the start of the call.
+    await provider.status();
+    expect(countRuns(countFile)).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await provider.status();
+    expect(countRuns(countFile)).toBe(2);
+  });
+
+  it("gives up a status call whose launch lookup never answers, and the next call starts fresh", async () => {
+    const { launch } = fakeLaunch({ FAKE_STATUS: SIGNED_IN });
+    let lookups = 0;
+    const provider = createClaudeProvider(
+      () => {
+        lookups += 1;
+        // The first lookup hangs for ever. Later ones answer.
+        return lookups === 1 ? new Promise(() => {}) : Promise.resolve(launch);
+      },
+      { launchTimeoutMs: 200, statusCacheMs: 0 },
+    );
+    const before = Date.now();
+    const [first, shared] = await Promise.all([provider.status(), provider.status()]);
+    expect(Date.now() - before).toBeLessThan(1000);
+    expect(first).toMatchObject({ state: "unavailable", detail: "The status could not be read." });
+    expect(shared.checkedAt).toBe(first.checkedAt);
+    expect(lookups).toBe(1);
+
+    const next = await provider.status();
+    expect(next.state).toBe("signed_in");
+    expect(lookups).toBe(2);
   });
 
   it("asks again after a sign-in step, because that changes the status", async () => {
