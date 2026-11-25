@@ -12,7 +12,8 @@ const enabled = process.env.SIGN_IN_REAL_CLI === "1";
 describe.skipIf(!enabled)("installed Claude Code CLI, empty config folder", () => {
   const configDir = mkdtempSync(join(tmpdir(), "sign-in-real-"));
   const provider = createClaudeProvider(async () => ({
-    command: "claude",
+    // SIGN_IN_REAL_CLI_COMMAND: test another Claude Code binary than the one on PATH.
+    command: process.env.SIGN_IN_REAL_CLI_COMMAND ?? "claude",
     args: [],
     // BROWSER points at a no-op so the test opens no browser window.
     env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, BROWSER: "true" },
@@ -27,6 +28,7 @@ describe.skipIf(!enabled)("installed Claude Code CLI, empty config folder", () =
     const started = await provider.startLogin();
     expect(started.phase).toBe("awaiting_code");
     expect(new URL(started.url!).protocol).toBe("https:");
+    expect(["claude.com", "claude.ai"]).toContain(new URL(started.url!).hostname);
 
     const done = await provider.submitCode("not-a-real-code#not-a-real-state");
     expect(done.phase).toBe("failed");

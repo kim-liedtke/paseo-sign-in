@@ -109,6 +109,15 @@ describe("Claude provider with a stand-in CLI", () => {
 });
 
 describe("Claude provider: sign-in link hosts", () => {
+  it("accepts the link in the layout of Claude Code 2.1.332: on claude.ai, on its own line", async () => {
+    // 2.1.332 prints "visit:" and the link on separate lines, in separate pieces.
+    const { launch } = fakeLaunch({ FAKE_MODE: "layout-2-1-332", FAKE_LINK: "https://claude.ai/oauth/authorize?code=fake" });
+    const provider = createClaudeProvider(async () => launch);
+    const started = await provider.startLogin();
+    expect(started).toMatchObject({ phase: "awaiting_code", url: "https://claude.ai/oauth/authorize?code=fake" });
+    expect((await provider.submitCode("good-code")).phase).toBe("succeeded");
+  });
+
   it("refuses a link that is not on a Claude host", async () => {
     const { launch, pidFile } = fakeLaunch({ FAKE_LINK: "https://claude.com.evil.test/cai/oauth/authorize?state=1" });
     const provider = createClaudeProvider(async () => launch, { linkTimeoutMs: 400 });
