@@ -86,6 +86,8 @@ if (args.startsWith("auth status")) {
       ).unref();
       while (!existsSync(file)) await sleep(20);
     }
+    // FAKE_VERIFY_DELAY: the CLI needs this long to check the code.
+    await sleep(Number(process.env.FAKE_VERIFY_DELAY ?? 0));
     if (code === "good-code") {
       process.stdout.write("Login successful.\n");
       process.exit(0);

@@ -1,6 +1,13 @@
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
-import { applyLoginAnswer, clearLoginTraces, loginKey, loginMutationKey, STATUS_KEY } from "../client/login-traces";
+import {
+  applyLoginAnswer,
+  clearLoginTraces,
+  loginKey,
+  loginMutationKey,
+  STATUS_KEY,
+  watchLoginEnd,
+} from "../client/login-traces";
 import type { LoginSnapshot } from "../shared/contracts";
 
 const LINK = "https://claude.com/cai/oauth/authorize?state=fake";
@@ -113,4 +120,63 @@ describe("applyLoginAnswer", () => {
     applyLoginAnswer(queryClient, "claude", snapshot, false);
     expect(queryClient.getQueryData(loginKey("claude"))).toBeUndefined();
   });
+});
+
+describe("a slow sign-in that ends after the screen closed", () => {
+  const verifying: LoginSnapshot = { provider: "claude", phase: "verifying", url: null, message: null, deadline: null };
+  const statusIsStale = (queryClient: QueryClient) => queryClient.getQueryState(STATUS_KEY)?.isInvalidated;
+  function clientWithStatus() {
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(STATUS_KEY, [{ provider: "claude", state: "signed_out" }]);
+    return queryClient;
+  }
+
+  it("follows the sign-in and reads the status again when it ends", async () => {
+    const queryClient = clientWithStatus();
+    const answers: LoginSnapshot[] = [verifying, verifying, succeeded];
+    let reads = 0;
+    const watching = watchLoginEnd(queryClient, async () => answers[reads++], 10);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(statusIsStale(queryClient)).toBe(false);
+    await watching;
+    expect(reads).toBe(3);
+    expect(statusIsStale(queryClient)).toBe(true);
+    // The answers of the reads are not cached.
+    expect(queryClient.getQueryData(loginKey("claude"))).toBeUndefined();
+  });
+
+  it("goes on when a read fails, and stops after the last allowed read", async () => {
+    const queryClient = clientWithStatus();
+    let reads = 0;
+    await watchLoginEnd(
+      queryClient,
+      async () => {
+        reads += 1;
+        if (reads === 1) throw new Error("host did not answer");
+        return verifying;
+      },
+      5,
+      4,
+    );
+    expect(reads).toBe(4);
+    expect(statusIsStale(queryClient)).toBe(true);
+  });
+
+  it("starts to follow only for a closed screen and a code that is being checked", async () => {
+    const calls: string[] = [];
+    const readState = async () => {
+      calls.push("read");
+      return succeeded;
+    };
+    const wait = () => new Promise((resolve) => setTimeout(resolve, 3200));
+    // Open screen: the screen polls by itself.
+    applyLoginAnswer(clientWithStatus(), "claude", verifying, true, readState);
+    // Closed screen, but no code was submitted: the sign-in cannot succeed.
+    applyLoginAnswer(clientWithStatus(), "claude", snapshot, false, readState);
+    const queryClient = clientWithStatus();
+    applyLoginAnswer(queryClient, "claude", verifying, false, readState);
+    await wait();
+    expect(calls).toEqual(["read"]);
+    expect(statusIsStale(queryClient)).toBe(true);
+  }, 10_000);
 });

@@ -210,3 +210,74 @@ describe("Claude provider: status cache", () => {
     expect(Date.now() - before).toBeLessThan(2000);
   });
 });
+
+describe("Claude provider: a request answers before the daemon gives up on it", () => {
+  const LINK = "https://claude.com/cai/oauth/authorize?state=fake";
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("start answers with the running state when the CLI is slow to show a link", async () => {
+    const { launch } = fakeLaunch({ FAKE_MODE: "no-link" });
+    const provider = createClaudeProvider(async () => launch, { requestWaitMs: 200, linkTimeoutMs: 800 });
+    const before = Date.now();
+    const started = await provider.startLogin();
+    expect(Date.now() - before).toBeLessThan(600);
+    expect(started).toMatchObject({ phase: "starting", url: null });
+    // The sign-in goes on. The state that the app polls shows how it ended.
+    await sleep(1300);
+    expect(provider.loginState()).toMatchObject({
+      phase: "failed",
+      message: "The provider did not show a sign-in link.",
+    });
+  });
+
+  it("submit answers with the running state when the CLI is slow to check the code", async () => {
+    const { launch } = fakeLaunch({ FAKE_LINK: LINK, FAKE_VERIFY_DELAY: "700" });
+    const provider = createClaudeProvider(async () => launch, { requestWaitMs: 200 });
+    await provider.startLogin();
+    // On a slow machine the start request can answer before the link is there.
+    while (provider.loginState().phase === "starting") await sleep(20);
+    const before = Date.now();
+    const submitted = await provider.submitCode("good-code");
+    expect(Date.now() - before).toBeLessThan(600);
+    expect(submitted).toMatchObject({ phase: "verifying", url: null });
+    await sleep(900);
+    expect(provider.loginState().phase).toBe("succeeded");
+  });
+
+  it("answers with the result at once when the CLI is fast", async () => {
+    const { launch } = fakeLaunch({ FAKE_LINK: LINK });
+    const provider = createClaudeProvider(async () => launch, { requestWaitMs: 5000 });
+    expect((await provider.startLogin()).phase).toBe("awaiting_code");
+    expect((await provider.submitCode("good-code")).phase).toBe("succeeded");
+  });
+
+  it("drops the cached status when a slow sign-in ends, not when the request answers", async () => {
+    const countFile = join(mkdtempSync(join(tmpdir(), "sign-in-count-")), "runs");
+    const { launch } = fakeLaunch({
+      FAKE_LINK: LINK,
+      FAKE_VERIFY_DELAY: "700",
+      FAKE_STATUS: SIGNED_IN,
+      FAKE_COUNT_FILE: countFile,
+    });
+    const runs = () => {
+      try {
+        return readFileSync(countFile, "utf8").length;
+      } catch {
+        return 0;
+      }
+    };
+    const provider = createClaudeProvider(async () => launch, { requestWaitMs: 200, statusCacheMs: 60_000 });
+    await provider.startLogin();
+    while (provider.loginState().phase === "starting") await sleep(20);
+    expect((await provider.submitCode("good-code")).phase).toBe("verifying");
+    // Another client reads the status while the host still checks the code.
+    const during = await provider.status();
+    expect(runs()).toBe(1);
+    await sleep(900);
+    expect(provider.loginState().phase).toBe("succeeded");
+    // The answer from before the end must not be served again.
+    const after = await provider.status();
+    expect(runs()).toBe(2);
+    expect(after.checkedAt).not.toBe(during.checkedAt);
+  });
+});

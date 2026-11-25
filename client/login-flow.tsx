@@ -2,10 +2,12 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { copyText, useToast } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Text, TextInput, View } from "react-native";
 import {
   cancelLoginRpc,
+  hasLoginEnded,
+  loginStateRpc,
   MAX_CODE_LENGTH,
   startLoginRpc,
   submitCodeRpc,
@@ -14,7 +16,7 @@ import {
 import { isAllowedLoginLink, LOGIN_LINK_HOSTS } from "../shared/links";
 import type { ProviderId } from "../shared/providers";
 import { isActivePhase, useLoginState } from "./data";
-import { applyLoginAnswer, loginMutationKey } from "./login-traces";
+import { applyLoginAnswer, loginMutationKey, STATUS_KEY } from "./login-traces";
 import { Button, Callout } from "./parts";
 import { useLoginCleanup } from "./use-login-cleanup";
 
@@ -41,13 +43,15 @@ export function LoginFlow(props: {
   const startLogin = useRpc(startLoginRpc);
   const submitCode = useRpc(submitCodeRpc);
   const cancelLogin = useRpc(cancelLoginRpc);
+  const readLoginState = useRpc(loginStateRpc);
 
   // Clears the cached link when this component goes away; false after that.
   const mounted = useLoginCleanup(queryClient, provider);
   const apply = (snapshot: LoginSnapshot) => {
-    // Reads the status again when the sign-in has ended, also when this
-    // screen is closed by then. Caches the answer only while it is open.
-    applyLoginAnswer(queryClient, provider, snapshot, mounted.current);
+    // Reads the status again when the sign-in has ended. If this screen is
+    // closed while the host still checks the code, the sign-in is followed
+    // until it ends. Caches the answer only while the screen is open.
+    applyLoginAnswer(queryClient, provider, snapshot, mounted.current, () => readLoginState({ provider }));
     if (mounted.current && !isActivePhase(snapshot.phase)) setCode("");
   };
   // The answers of these calls can hold the sign-in link. They share one key,
@@ -64,6 +68,16 @@ export function LoginFlow(props: {
 
 
   const snapshot = login.data;
+  // A slow sign-in ends between two polls of its state, not in the answer of
+  // a call. Read the status again when the polled state shows the end.
+  const lastPhase = useRef(snapshot?.phase);
+  useEffect(() => {
+    if (hasLoginEnded(lastPhase.current, snapshot?.phase)) {
+      setCode("");
+      void queryClient.invalidateQueries({ queryKey: STATUS_KEY });
+    }
+    lastPhase.current = snapshot?.phase;
+  }, [snapshot?.phase, queryClient]);
   const phase = start.isPending ? "starting" : submit.isPending ? "verifying" : (snapshot?.phase ?? "idle");
   // The daemon accepts only links to the provider's known hosts. Check again
   // here, so the app never shows or opens a link to another host.
