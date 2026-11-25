@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AuthProvider } from "../server/core/provider";
 import { ProviderRegistry } from "../server/core/registry";
-import { cancelLoginRpc, startLoginRpc, submitCodeRpc } from "../shared/contracts";
+import { cancelLoginRpc, hasLoginEnded, startLoginRpc, submitCodeRpc } from "../shared/contracts";
 
 function stub(id: string): AuthProvider & { disposed: boolean } {
   const snapshot = { provider: "claude" as const, phase: "idle" as const, url: null, message: null, deadline: null };
@@ -58,5 +58,20 @@ describe("RPC contracts", () => {
     for (const code of ["a\nb", "a\rb", "a\u0000b", "a\u007fb", "a\u0085b", "a\u009bb", "a\u2028b", "a\u2029b"]) {
       expect(submitCodeRpc.input.safeParse({ provider: "claude", code }).success).toBe(false);
     }
+  });
+});
+
+describe("hasLoginEnded", () => {
+  it("is true only for the step from a running sign-in to an ended one", () => {
+    for (const running of ["starting", "awaiting_code", "verifying"] as const) {
+      for (const ended of ["succeeded", "failed", "cancelled", "timed_out", "idle"] as const) {
+        expect(hasLoginEnded(running, ended)).toBe(true);
+      }
+      expect(hasLoginEnded(running, "verifying")).toBe(false);
+      expect(hasLoginEnded(running, undefined)).toBe(false);
+    }
+    expect(hasLoginEnded(undefined, "succeeded")).toBe(false);
+    expect(hasLoginEnded("succeeded", "succeeded")).toBe(false);
+    expect(hasLoginEnded("idle", "failed")).toBe(false);
   });
 });

@@ -17,6 +17,7 @@ export function createClaudeProvider(
     statusCacheMs?: number;
     statusTimeoutMs?: number;
     launchTimeoutMs?: number;
+    requestWaitMs?: number;
     linkTimeoutMs?: number;
   } = {},
 ) {

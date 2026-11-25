@@ -47,6 +47,11 @@ export function isActiveLoginPhase(phase: LoginPhase | undefined): boolean {
   return phase !== undefined && ACTIVE_LOGIN_PHASES.includes(phase);
 }
 
+/** True when a sign-in that ran in the previous state has ended in the next one. */
+export function hasLoginEnded(previous: LoginPhase | undefined, next: LoginPhase | undefined): boolean {
+  return isActiveLoginPhase(previous) && next !== undefined && !isActiveLoginPhase(next);
+}
+
 export const loginSnapshotSchema = z.object({
   provider: providerId,
   phase: loginPhaseSchema,

@@ -22,6 +22,13 @@ export interface CliProviderDefinition {
   /** A status answer is reused for this long, and a running status call is shared. */
   statusCacheMs?: number;
   statusTimeoutMs?: number;
+  /**
+   * A start or submit request answers after at most this time, with the
+   * state the sign-in is in by then. The daemon gives up on a plugin request
+   * after 30 seconds, so a request must not wait for a slow CLI longer than
+   * that. The app polls the state while a sign-in runs and shows the result.
+   */
+  requestWaitMs?: number;
   /** The lookup of the launch for a status call is given up after this time. */
   launchTimeoutMs?: number;
   loginTimeoutMs?: number;
@@ -72,6 +79,23 @@ export function createCliProvider(definition: CliProviderDefinition): AuthProvid
     now,
   });
   const toSnapshot = (state: LoginState): LoginSnapshot => ({ provider: definition.id, ...state });
+  const requestWaitMs = definition.requestWaitMs ?? 20_000;
+  // Resolves with the result of the work, or with the current state when the
+  // work takes longer than a request may wait. The work goes on either way.
+  const answerInTime = (work: Promise<LoginState>): Promise<LoginState> =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve(session.snapshot()), requestWaitMs);
+      work.then(
+        (state) => {
+          clearTimeout(timer);
+          resolve(state);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
   const statusCacheMs = definition.statusCacheMs ?? 5000;
   // One status call at a time. Several clients and surfaces ask at the same
   // moment, and each call starts a process.
@@ -128,11 +152,11 @@ export function createCliProvider(definition: CliProviderDefinition): AuthProvid
     // A sign-in changes the status. Every step drops the cached answer.
     async startLogin() {
       forgetStatus();
-      return toSnapshot(await session.start());
+      return toSnapshot(await answerInTime(session.start()));
     },
     async submitCode(code: string) {
       try {
-        return toSnapshot(await session.submitCode(code));
+        return toSnapshot(await answerInTime(session.submitCode(code)));
       } finally {
         forgetStatus();
       }

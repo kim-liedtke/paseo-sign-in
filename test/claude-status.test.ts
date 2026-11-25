@@ -210,3 +210,42 @@ describe("Claude provider: status cache", () => {
     expect(Date.now() - before).toBeLessThan(2000);
   });
 });
+
+describe("Claude provider: a request answers before the daemon gives up on it", () => {
+  const LINK = "https://claude.com/cai/oauth/authorize?state=fake";
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("start answers with the running state when the CLI is slow to show a link", async () => {
+    const { launch } = fakeLaunch({ FAKE_MODE: "no-link" });
+    const provider = createClaudeProvider(async () => launch, { requestWaitMs: 200, linkTimeoutMs: 800 });
+    const before = Date.now();
+    const started = await provider.startLogin();
+    expect(Date.now() - before).toBeLessThan(600);
+    expect(started).toMatchObject({ phase: "starting", url: null });
+    // The sign-in goes on. The state that the app polls shows how it ended.
+    await sleep(1300);
+    expect(provider.loginState()).toMatchObject({
+      phase: "failed",
+      message: "The provider did not show a sign-in link.",
+    });
+  });
+
+  it("submit answers with the running state when the CLI is slow to check the code", async () => {
+    const { launch } = fakeLaunch({ FAKE_LINK: LINK, FAKE_VERIFY_DELAY: "700" });
+    const provider = createClaudeProvider(async () => launch, { requestWaitMs: 200 });
+    await provider.startLogin();
+    const before = Date.now();
+    const submitted = await provider.submitCode("good-code");
+    expect(Date.now() - before).toBeLessThan(600);
+    expect(submitted).toMatchObject({ phase: "verifying", url: null });
+    await sleep(900);
+    expect(provider.loginState().phase).toBe("succeeded");
+  });
+
+  it("answers with the result at once when the CLI is fast", async () => {
+    const { launch } = fakeLaunch({ FAKE_LINK: LINK });
+    const provider = createClaudeProvider(async () => launch, { requestWaitMs: 5000 });
+    expect((await provider.startLogin()).phase).toBe("awaiting_code");
+    expect((await provider.submitCode("good-code")).phase).toBe("succeeded");
+  });
+});
