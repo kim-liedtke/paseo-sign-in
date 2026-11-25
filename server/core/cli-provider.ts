@@ -155,11 +155,11 @@ export function createCliProvider(definition: CliProviderDefinition): AuthProvid
       return toSnapshot(await answerInTime(session.start()));
     },
     async submitCode(code: string) {
-      try {
-        return toSnapshot(await answerInTime(session.submitCode(code)));
-      } finally {
-        forgetStatus();
-      }
+      // The cached status is dropped when the sign-in ends, which can be
+      // later than the answer of this request.
+      const work = session.submitCode(code);
+      void work.then(forgetStatus, forgetStatus);
+      return toSnapshot(await answerInTime(work));
     },
     async cancel() {
       try {

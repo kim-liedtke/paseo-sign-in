@@ -234,6 +234,8 @@ describe("Claude provider: a request answers before the daemon gives up on it", 
     const { launch } = fakeLaunch({ FAKE_LINK: LINK, FAKE_VERIFY_DELAY: "700" });
     const provider = createClaudeProvider(async () => launch, { requestWaitMs: 200 });
     await provider.startLogin();
+    // On a slow machine the start request can answer before the link is there.
+    while (provider.loginState().phase === "starting") await sleep(20);
     const before = Date.now();
     const submitted = await provider.submitCode("good-code");
     expect(Date.now() - before).toBeLessThan(600);
@@ -247,5 +249,35 @@ describe("Claude provider: a request answers before the daemon gives up on it", 
     const provider = createClaudeProvider(async () => launch, { requestWaitMs: 5000 });
     expect((await provider.startLogin()).phase).toBe("awaiting_code");
     expect((await provider.submitCode("good-code")).phase).toBe("succeeded");
+  });
+
+  it("drops the cached status when a slow sign-in ends, not when the request answers", async () => {
+    const countFile = join(mkdtempSync(join(tmpdir(), "sign-in-count-")), "runs");
+    const { launch } = fakeLaunch({
+      FAKE_LINK: LINK,
+      FAKE_VERIFY_DELAY: "700",
+      FAKE_STATUS: SIGNED_IN,
+      FAKE_COUNT_FILE: countFile,
+    });
+    const runs = () => {
+      try {
+        return readFileSync(countFile, "utf8").length;
+      } catch {
+        return 0;
+      }
+    };
+    const provider = createClaudeProvider(async () => launch, { requestWaitMs: 200, statusCacheMs: 60_000 });
+    await provider.startLogin();
+    while (provider.loginState().phase === "starting") await sleep(20);
+    expect((await provider.submitCode("good-code")).phase).toBe("verifying");
+    // Another client reads the status while the host still checks the code.
+    const during = await provider.status();
+    expect(runs()).toBe(1);
+    await sleep(900);
+    expect(provider.loginState().phase).toBe("succeeded");
+    // The answer from before the end must not be served again.
+    const after = await provider.status();
+    expect(runs()).toBe(2);
+    expect(after.checkedAt).not.toBe(during.checkedAt);
   });
 });

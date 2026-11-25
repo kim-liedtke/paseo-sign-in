@@ -7,6 +7,7 @@ import { Text, TextInput, View } from "react-native";
 import {
   cancelLoginRpc,
   hasLoginEnded,
+  loginStateRpc,
   MAX_CODE_LENGTH,
   startLoginRpc,
   submitCodeRpc,
@@ -42,13 +43,15 @@ export function LoginFlow(props: {
   const startLogin = useRpc(startLoginRpc);
   const submitCode = useRpc(submitCodeRpc);
   const cancelLogin = useRpc(cancelLoginRpc);
+  const readLoginState = useRpc(loginStateRpc);
 
   // Clears the cached link when this component goes away; false after that.
   const mounted = useLoginCleanup(queryClient, provider);
   const apply = (snapshot: LoginSnapshot) => {
-    // Reads the status again when the sign-in has ended, also when this
-    // screen is closed by then. Caches the answer only while it is open.
-    applyLoginAnswer(queryClient, provider, snapshot, mounted.current);
+    // Reads the status again when the sign-in has ended. If this screen is
+    // closed while the host still checks the code, the sign-in is followed
+    // until it ends. Caches the answer only while the screen is open.
+    applyLoginAnswer(queryClient, provider, snapshot, mounted.current, () => readLoginState({ provider }));
     if (mounted.current && !isActivePhase(snapshot.phase)) setCode("");
   };
   // The answers of these calls can hold the sign-in link. They share one key,

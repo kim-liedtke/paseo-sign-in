@@ -22,11 +22,39 @@ export function applyLoginAnswer(
   provider: ProviderId,
   snapshot: LoginSnapshot,
   screenOpen: boolean,
+  readState?: () => Promise<LoginSnapshot>,
 ): void {
   if (!isActiveLoginPhase(snapshot.phase)) {
     void queryClient.invalidateQueries({ queryKey: STATUS_KEY });
+  } else if (!screenOpen && snapshot.phase === "verifying" && readState) {
+    // The host still checks the code, and the screen that would poll the
+    // result is closed. Follow the sign-in here, so the sidebar learns the
+    // result when it ends.
+    void watchLoginEnd(queryClient, readState);
   }
   if (screenOpen) queryClient.setQueryData(loginKey(provider), snapshot);
+}
+
+/**
+ * Reads the sign-in state until the sign-in has ended, then has the status
+ * read again. The answers are not cached. Gives up after the number of reads
+ * that covers the longest sign-in, and has the status read again then too.
+ */
+export async function watchLoginEnd(
+  queryClient: QueryClient,
+  readState: () => Promise<LoginSnapshot>,
+  intervalMs = 3000,
+  maxReads = 120,
+): Promise<void> {
+  for (let read = 0; read < maxReads; read += 1) {
+    await new Promise<void>((resolve) => setTimeout(() => resolve(), intervalMs));
+    try {
+      if (!isActiveLoginPhase((await readState()).phase)) break;
+    } catch {
+      // The host did not answer this time. Try again.
+    }
+  }
+  await queryClient.invalidateQueries({ queryKey: STATUS_KEY });
 }
 
 /**
