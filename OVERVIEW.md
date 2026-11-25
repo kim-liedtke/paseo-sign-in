@@ -16,7 +16,7 @@ After a new sign-in, start a new agent. Agents that are already running keep the
 
 The provider CLI must be installed on the daemon host. The plugin starts it the way the daemon does: it uses the command and the environment that the daemon configuration sets for the provider.
 
-Supported provider: Claude Code. Tested with Claude Code 2.1.323 and Paseo 0.16.1 on Linux.
+Supported provider: Claude Code. Tested with Claude Code 2.1.323, 2.1.326 and 2.1.332, and Paseo 0.16.1, on Linux.
 
 ## Setting
 

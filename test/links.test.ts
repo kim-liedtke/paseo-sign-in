@@ -12,6 +12,20 @@ describe("isAllowedLoginLink", () => {
     expect(isAllowedLoginLink("https://claude.com", hosts)).toBe(true);
   });
 
+  it("accepts the sign-in link of Claude Code 2.1.332, which is on claude.ai", () => {
+    expect(isAllowedLoginLink("https://claude.ai/oauth/authorize?code=abc", hosts)).toBe(true);
+  });
+
+  it.each([
+    ["a host that only starts with the name", "https://claude.ai.evil.test/oauth/authorize"],
+    ["a host that only ends with the name", "https://notclaude.ai/oauth/authorize"],
+    ["a subdomain that is not listed", "https://login.claude.ai/oauth/authorize"],
+    ["a user part", "https://claude.ai@evil.test/oauth/authorize"],
+    ["plain http", "http://claude.ai/oauth/authorize"],
+  ])("refuses a claude.ai look-alike with %s", (_name, link) => {
+    expect(isAllowedLoginLink(link, hosts)).toBe(false);
+  });
+
   it.each([
     ["plain http", "http://claude.com/cai/oauth/authorize"],
     ["another host", "https://example.test/cai/oauth/authorize"],

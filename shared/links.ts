@@ -2,9 +2,12 @@ import type { ProviderId } from "./providers";
 
 // The hosts whose sign-in links the plugin accepts, for each provider. A link
 // to any other host is refused on the daemon and again in the app.
-// Claude Code prints https://claude.com/cai/oauth/authorize?...
+// Claude Code prints its sign-in link on one of two hosts, by version. Both
+// were seen in the output of `claude auth login`:
+//   up to 2.1.326: https://claude.com/cai/oauth/authorize?...
+//   2.1.332:       https://claude.ai/oauth/authorize?...
 export const LOGIN_LINK_HOSTS: Record<ProviderId, readonly string[]> = {
-  claude: ["claude.com"],
+  claude: ["claude.com", "claude.ai"],
 };
 
 // Backslash, whitespace, control characters (C0, DEL, C1) and the Unicode line

@@ -71,7 +71,14 @@ if (args.startsWith("auth status")) {
   process.stdout.write(AFTER);
   setInterval(() => {}, 1000);
 } else {
-  printLink();
+  if (mode === "layout-2-1-332") {
+    // The output of Claude Code 2.1.332: two pieces, the link on its own line.
+    process.stdout.write("Opening browser to sign in…\n");
+    await sleep(50);
+    process.stdout.write(`If the browser didn't open, visit:\n${HYPERLINK}${AFTER}`);
+  } else {
+    printLink();
+  }
   const lines = createInterface({ input: process.stdin });
   lines.once("line", async (code) => {
     // FAKE_EXIT_HELPER: a helper keeps the output pipes open after the CLI exits.
